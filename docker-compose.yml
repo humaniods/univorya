@@ -1,0 +1,13 @@
+services:
+  univorya:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      UNIVORYA_DATA_DIR: /data
+      UNIVORYA_SEED_DEMO: "1"
+    volumes:
+      - univorya-data:/data
+    restart: unless-stopped
+volumes:
+  univorya-data:

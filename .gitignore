@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/
+.env
+.venv/
+test-results/
+node_modules/
+
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
