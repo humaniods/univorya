@@ -1,20 +1,24 @@
-"""Visual smoke test despite sandbox Chrome navigation policy.
+"""End-to-end browser smoke test against a real Univorya server in Chromium.
 
-This loads actual CSS/JS inside Chromium, forwards the app's fetch requests to
-FastAPI TestClient, and patches only history routing for the about:blank origin.
-Run: python tests/browser_flow.py
+Starts uvicorn on a throwaway data directory, drives Chromium through signup,
+multi-image upload, publish, discovery, editing, the mobile drawer and the
+animation layer, and writes the reference screenshots into docs/.
+
+Run: python tests/browser_flow.py            (headless, for CI)
+     UNIVORYA_HEADED=1 python tests/browser_flow.py   (watch it in a real window)
 """
-import base64
-import importlib
 import io
-import json
 import os
 import shutil
-import tempfile
+import socket
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import httpx
+import uvicorn
 from PIL import Image, ImageDraw, ImageFont
 from playwright.sync_api import sync_playwright
 
@@ -22,170 +26,421 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 DOCS = ROOT / 'docs'
 DOCS.mkdir(exist_ok=True)
+DATA = tempfile.mkdtemp(prefix='univorya-browser-')
+os.environ['UNIVORYA_DATA_DIR'] = DATA
+os.environ['UNIVORYA_SEED_DEMO'] = '1'
+
+from app import main  # noqa: E402
 
 
-def preview():
-    with tempfile.TemporaryDirectory() as temp:
-        os.environ['UNIVORYA_DATA_DIR'] = temp
-        os.environ['UNIVORYA_SEED_DEMO'] = '1'
-        from app import main
-        importlib.reload(main)
-        with TestClient(main.app) as client:
-            def serve(request):
-                method = request.get('method', 'GET')
-                url = request['url']
-                if method == 'GET':
-                    res = client.get(url)
-                else:
-                    files = None
-                    body = request.get('body')
-                    if request.get('form'):
-                        data = request['form']['fields']
-                        files = {x['name']:(x['filename'],base64.b64decode(x['data']),x['type'])
-                                 for x in request['form']['files']}
-                        res = client.request(method,url,data=data,files=files)
-                    elif body:
-                        res = client.request(method,url,content=body,headers={'content-type':request.get('contentType','application/json')})
-                    else:
-                        res = client.request(method,url)
-                response_text=res.text
-                # Browser sandbox blocks HTTP images too. Expose genuine stored image bytes
-                # as inlined data URLs only in this test transport.
-                if method=='GET' and url.startswith('/api/projects') and res.status_code==200:
-                    payload=res.json()
-                    cards=payload.get('projects',[])
-                    if 'project' in payload:cards.append(payload['project'])
-                    for card in cards:
-                        if card.get('cover_image'):
-                            blob=client.get(card['cover_image'])
-                            assert blob.status_code==200
-                            card['cover_image']='data:image/webp;base64,'+base64.b64encode(blob.content).decode()
-                    response_text=json.dumps(payload)
-                return {'status':res.status_code,'data':response_text,'type':res.headers.get('content-type','application/json')}
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
 
-            with sync_playwright() as p:
-                browser = p.chromium.launch(executable_path=shutil.which('chromium') or p.chromium.executable_path,headless=True,args=['--no-sandbox'])
-                page = browser.new_page(viewport={'width':1440,'height':900},device_scale_factor=1)
-                errors=[]
-                page.on('pageerror',lambda err:errors.append(str(err)))
-                page.expose_function('__backend',serve)
-                page.set_content('''<!doctype html><html><head><base href="https://univorya.local/"></head><body><div class="site-glow glow-a"></div><div class="site-glow glow-b"></div><div id="app"></div><div id="toast-container"></div></body></html>''')
-                css=(ROOT/'static/styles.css').read_text().split('\n',1)[1]
-                page.add_style_tag(content=css)
-                page.evaluate('''() => {
-                  window.__testPath = '/';
-                  window.fetch = async (url,opts={}) => {
-                    const payload={url,method:opts.method||'GET',contentType:opts.headers?.['Content-Type']};
-                    if(opts.body instanceof FormData){
-                      const fields={},files=[];
-                      for (const [name,value] of opts.body.entries()) {
-                        if(value instanceof File){
-                          const buffer=Array.from(new Uint8Array(await value.arrayBuffer()));
-                          const b64=btoa(buffer.map(n=>String.fromCharCode(n)).join(''));
-                          files.push({name,filename:value.name,type:value.type,data:b64});
-                        } else {fields[name]=value;}
-                      }
-                      payload.form={fields,files};
-                    }else if(opts.body){payload.body=opts.body;}
-                    const response=await window.__backend(payload);
-                    return new Response(response.data,{status:response.status,headers:{'content-type':response.type}});
-                  };
-                }''')
-                logo='data:image/svg+xml;base64,'+base64.b64encode((ROOT/'static/logo.svg').read_bytes()).decode()
-                script=(ROOT/'static/app.js').read_text().replace('/logo.svg',logo).replace('location.pathname', 'window.__testPath').replace("history.pushState({},'',path)","window.__testPath=path").replace("new URL(a.href,location.origin)","new URL(a.href,'https://univorya.local')")
-                page.add_script_tag(content=script)
-                page.locator('.project-card').first.wait_for(timeout=10000)
-                print('Desktop homepage:',page.locator('h1').inner_text().replace('\n',' '),'| demo cards:',page.locator('.project-card').count())
-                page.screenshot(path=str(DOCS/'home-desktop.png'),full_page=True)
-                page.set_viewport_size({'width':390,'height':844})
-                page.evaluate('home()')
-                page.locator('.project-card').first.wait_for(timeout=10000)
-                page.screenshot(path=str(DOCS/'home-mobile.png'),full_page=True)
-                print('Mobile viewport:',page.evaluate('window.innerWidth'),'document scroll width:',page.evaluate('document.documentElement.scrollWidth'))
-                assert page.evaluate('document.documentElement.scrollWidth') <= 410
-                page.set_viewport_size({'width':1440,'height':900})
 
-                page.locator('[data-link][href="/submit"]').first.click()
-                assert page.locator('.gate-card').count() == 1
-                page.locator('.gate-card [href="/join"]').click()
-                page.locator('#full-name').fill('Morgan Builder')
-                page.locator('#user-name').fill('morganbuilds')
-                page.locator('#email').fill('morgan@test.example')
-                page.locator('#password').fill('strong-user-password')
-                page.locator('#auth-form button[type=submit]').click()
-                page.locator('#project-form').wait_for(timeout=10000)
-                print('Signup → submission form: passed')
+def artwork(size=(1400, 850), label='AURORA', sub='A calmer way to build better habits.'):
+    """A richly drawn fixture so the image-backed showcase actually looks real."""
+    image = Image.new('RGB', size)
+    pixels = image.load()
+    width, height = size
+    for y in range(height):
+        for x in range(width):
+            dx, dy = x / width, y / height
+            light = max(0, 1 - ((dx - .72) ** 2 + (dy - .35) ** 2) ** .5 * 1.6)
+            pixels[x, y] = (int(32 + 76 * light + 26 * dx), int(24 + 25 * light + 35 * dy), int(70 + 95 * light))
+    draw = ImageDraw.Draw(image, 'RGBA')
+    for i in range(6):
+        offset = i * 58
+        draw.arc((100 + offset, 70 + offset, width - 100 - offset, height - 30 - offset), 35, 330,
+                 fill=(180, 174, 255, 35), width=3)
+    draw.rounded_rectangle((182, 155, width - 182, 692), radius=36, fill=(27, 26, 58, 195),
+                           outline=(198, 168, 255, 105), width=3)
+    draw.rounded_rectangle((212, 187, width - 212, 250), radius=14, fill=(255, 255, 255, 18))
+    for i, colour in enumerate([(255, 153, 183, 220), (255, 216, 156, 220), (152, 255, 212, 220)]):
+        draw.ellipse((241 + i * 29, 212, 253 + i * 29, 224), fill=colour)
+    draw.rounded_rectangle((251, 304, 343, 396), radius=27, fill=(167, 137, 255, 180))
+    try:
+        bold = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 67)
+        small = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 28)
+    except OSError:
+        bold = small = ImageFont.load_default()
+    draw.text((372, 303), label, font=bold, fill=(244, 238, 255, 255))
+    draw.text((255, 464), sub, font=small, fill=(196, 180, 233, 255))
+    for i in range(7):
+        draw.rounded_rectangle((255 + i * 118, 550, 341 + i * 118, 610), radius=16,
+                               fill=(141, 113, 226, 140 if i % 2 else 210))
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    return buffer.getvalue()
 
-                # Generate a richly rendered cover fixture so the actual image-upload showcase is visible.
-                image=Image.new('RGB',(1400,850))
-                pixels=image.load()
-                for y in range(850):
-                    for x in range(1400):
-                        dx=x/1400;dy=y/850
-                        light=max(0,1-(((dx-.72)**2 + (dy-.35)**2)**.5)*1.6)
-                        pixels[x,y]=(int(32+76*light+26*dx),int(24+25*light+35*dy),int(70+95*light))
-                d=ImageDraw.Draw(image,'RGBA')
-                for i in range(6):
-                    offset=i*58
-                    d.arc((100+offset,70+offset,1300-offset,920-offset),35,330,fill=(180,174,255,35),width=3)
-                d.rounded_rectangle((182,155,1218,692),radius=36,fill=(27,26,58,195),outline=(198,168,255,105),width=3)
-                d.rounded_rectangle((212,187,1188,250),radius=14,fill=(255,255,255,18))
-                for i,c in enumerate([(255,153,183,220),(255,216,156,220),(152,255,212,220)]):
-                    d.ellipse((241+i*29,212,253+i*29,224),fill=c)
-                d.rounded_rectangle((251,304,343,396),radius=27,fill=(167,137,255,180))
-                try:
-                    bold=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',67)
-                    sub=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',28)
-                except OSError:
-                    bold=ImageFont.load_default();sub=bold
-                d.text((372,303),'AURORA',font=bold,fill=(244,238,255,255))
-                d.text((255,464),'A calmer way to build better habits.',font=sub,fill=(196,180,233,255))
-                for i in range(7):
-                    d.rounded_rectangle((255+i*118,550,341+i*118,610),radius=16,fill=(141,113,226,140 if i%2 else 210))
-                out=io.BytesIO();image.save(out,format='PNG')
-                page.locator('#cover').set_input_files({'name':'morgan-cover.png','mimeType':'image/png','buffer':out.getvalue()})
-                page.locator('#title').fill('Aurora Habit Tracker')
-                page.locator('#tagline').fill('A calmer way to track your everyday routines.')
-                page.locator('#description').fill('Aurora is an independent habit-tracking web application that celebrates small everyday progress, thoughtful routines and reflection with a clean, distraction-free interface.')
-                page.locator('#category').select_option('Web App')
-                page.locator('#stage').select_option('Beta')
-                page.locator('#tech').fill('Python, FastAPI, JavaScript')
-                page.locator('#tags').fill('wellness, productivity')
-                page.locator('#repo_url').fill('https://github.com/example/aurora')
-                page.screenshot(path=str(DOCS/'submission-form.png'),full_page=True)
-                page.locator('#project-form button[type=submit]').click()
-                page.locator('.detail-header h1').wait_for(timeout=10000)
-                assert 'Aurora Habit Tracker' in page.locator('.detail-header h1').inner_text()
-                assert page.locator('.detail-art img').count() == 1
-                page.locator('.detail-art img').evaluate('(img)=>img.decode()')
-                assert page.locator('.detail-art img').evaluate('(img)=>img.naturalWidth') > 0
-                assert page.locator('.detail-header .detail-author').inner_text().strip().startswith('M')
-                page.screenshot(path=str(DOCS/'published-project.png'),full_page=True)
-                print('Published image-backed project: passed')
 
-                page.locator('.nav-links [href="/explore"]').click()
-                page.locator('.project-card').first.wait_for(timeout=10000)
-                page.locator('#search-input').fill('Aurora Habit')
-                page.wait_for_timeout(550)
-                assert page.locator('.project-card').count() == 1
-                assert page.locator('.project-title').inner_text() == 'Aurora Habit Tracker'
-                print('Public search discovery: passed')
-                page.locator('.project-title').click()
-                page.locator('[href^="/edit/"]').click()
-                page.locator('#project-form').wait_for(timeout=10000)
-                assert page.locator('#title').input_value()=='Aurora Habit Tracker'
-                page.locator('#title').fill('Aurora Habit Studio')
-                page.locator('#stage').select_option('Launched')
-                page.locator('#project-form button[type=submit]').click()
-                page.locator('.detail-header h1').wait_for(timeout=10000)
-                assert 'Aurora Habit Studio' in page.locator('.detail-header h1').inner_text()
-                assert 'Launched' in page.locator('.detail-header .stage').inner_text()
-                print('Owner edit and published update: passed')
-                if errors:print('Browser errors:',errors)
-                assert not errors, errors
-                browser.close()
+def screenshot(width=520, height=360, tone=(90, 60, 190), caption=''):
+    image = Image.new('RGB', (width, height), tone)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, width, 42), fill=(24, 24, 44))
+    for i in range(3):
+        draw.ellipse((16 + i * 20, 14, 30 + i * 20, 28), fill=(200 - i * 40, 160, 220))
+    draw.rounded_rectangle((28, 76, width - 28, 190), radius=12, fill=(255, 255, 255))
+    draw.rounded_rectangle((28, 208, width - 120, 268), radius=12, fill=(20, 20, 40))
+    draw.rounded_rectangle((28, 286, width - 28, 330), radius=12, fill=(230, 226, 255))
+    if caption:
+        draw.text((34, 400 // 2), caption, fill=(255, 255, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+def seed_pagination(base):
+    """Enough real projects that /explore genuinely needs more than one page."""
+    with httpx.Client(base_url=base, timeout=20) as client:
+        client.post('/api/auth/register', json={'name': 'Pagination Planter', 'username': 'planter' + str(time.time())[-6:].replace('.', ''),
+                                                'email': 'planter@example.invalid', 'password': 'Correct-Horse-59'})
+        slugs = []
+        for i in range(20):
+            response = client.post('/api/projects', data={
+                'title': 'Deep Shelf Project ' + str(i), 'tagline': 'Another seeded creation so pagination has work to do.',
+                'description': 'Seeded only so the show-more control has a second page to fetch in the browser smoke test.',
+                'category': 'Open Source', 'stage': 'Building', 'tech': 'SQLite', 'cover_style': 'slate'})
+            assert response.status_code == 201, response.text
+            slugs.append(response.json()['slug'])
+        return slugs
+
+
+def run(base):
+    # Chrome reports every non-2xx response as a console error, so store the origin URL with each
+    # message: the deliberately provoked 401/404 below must not mask a genuinely broken asset.
+    errors, console = [], []
+    expected_failures = {base + '/api/projects', base + '/api/makers/nobody-at-all',
+                         base + '/api/projects/%25zz-not-a-slug'}
+    with sync_playwright() as playwright:
+        executable = shutil.which('chromium') or shutil.which('chromium-browser') or shutil.which('google-chrome')
+        browser = playwright.chromium.launch(headless=not os.environ.get('UNIVORYA_HEADED'),
+                                             executable_path=executable, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 1440, 'height': 900})
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.on('console', lambda message: console.append((message.text, message.location.get('url', ''))) if message.type == 'error' else None)
+
+        page.goto(base + '/', wait_until='networkidle')
+        page.locator('.project-card').first.wait_for(timeout=15000)
+        cards = page.locator('.project-card').count()
+        print(f'home renders {cards} seeded demo cards, h1 = {page.locator("h1").first.inner_text()!r}')
+        assert cards >= 8
+
+        # Fonts are self-hosted now: they must actually load under font-src 'self'.
+        page.evaluate('() => document.fonts.ready')
+        loaded = page.evaluate('() => document.fonts.size')
+        family = page.evaluate("() => getComputedStyle(document.querySelector('h1')).fontFamily")
+        print(f'self-hosted fonts: {loaded} faces registered, h1 uses {family}')
+        assert loaded >= 4 and 'Jakarta' in family
+
+        # The motion layer must be live, not just declared.
+        running = page.evaluate('() => document.getAnimations().filter(a => a.playState === "running").length')
+        keyframes = page.evaluate("""() => {let n=0;for(const s of document.styleSheets){try{for(const r of s.cssRules){if(r.type===CSSRule.KEYFRAMES_RULE)n++}}catch{}}return n}""")
+        print(f'animation layer: {keyframes} @keyframes rules, {running} animations running')
+        assert keyframes >= 10 and running >= 3
+
+        page.locator('#discover').scroll_into_view_if_needed()
+        page.wait_for_timeout(900)
+        revealed = page.locator('.project-card.is-visible').count()
+        print(f'scroll reveals: {revealed} cards animated into view')
+        assert revealed >= 6
+        page.screenshot(path=str(DOCS / 'home-desktop.png'), full_page=True)
+
+        # URL state: filters must survive a reload.
+        page.locator('#search-input').fill('Orbit')
+        page.wait_for_timeout(700)
+        assert 'q=Orbit' in page.url, page.url
+        page.locator('#stage-select').select_option('Beta')
+        page.wait_for_timeout(500)
+        assert 'stage=Beta' in page.url
+        page.reload(wait_until='networkidle')
+        page.wait_for_timeout(900)
+        assert page.locator('#search-input').input_value() == 'Orbit', 'search must survive reload'
+        assert page.locator('#stage-select').input_value() == 'Beta'
+        print('deep link survives reload:', page.url.replace(base, ''))
+        page.locator('#search-input').fill('')
+        page.wait_for_timeout(700)
+
+        # Pagination: the P0 bug left 91% of the catalogue unreachable.
+        page.goto(base + '/explore', wait_until='networkidle')
+        page.locator('.project-card').first.wait_for(timeout=15000)
+        first_page = page.locator('.project-card').count()
+        total = int(page.locator('#results-count').inner_text().split()[0])
+        page.locator('[data-action="load-more"]').click()
+        page.wait_for_timeout(1200)
+        grown = page.locator('.project-card').count()
+        print(f'show more: {first_page} -> {grown} cards of {total} total')
+        assert grown > first_page
+        assert page.locator('.toast.error').count() == 0, page.locator('.toast.error').all_inner_texts()
+        page.screenshot(path=str(DOCS / 'explore-pagination.png'), full_page=False)
+
+        # Responsive overflow sweep.
+        for width in (320, 390, 768, 1024):
+            page.set_viewport_size({'width': width, 'height': 900})
+            page.wait_for_timeout(350)
+            overflow = page.evaluate('() => document.documentElement.scrollWidth - document.documentElement.clientWidth')
+            assert overflow <= 0, f'{width}px overflows by {overflow}px'
+        print('responsive sweep: no horizontal overflow at 320/390/768/1024')
+
+        # Mobile drawer behaviour.
+        page.set_viewport_size({'width': 390, 'height': 844})
+        page.goto(base + '/', wait_until='networkidle')
+        page.evaluate('home()')
+        page.locator('[data-action="menu"]').wait_for(state='visible')
+        page.locator('[data-action="menu"]').click()
+        page.wait_for_timeout(400)
+        opened = page.evaluate("""() => {const nav=document.querySelector('.nav-links');
+          return {open:nav.classList.contains('mobile-open'), expanded:document.querySelector('[data-action="menu"]').getAttribute('aria-expanded'),
+                  locked:getComputedStyle(document.body).overflowY, veil:!!document.querySelector('.drawer-veil')}}""")
+        print('drawer opened:', opened)
+        assert opened['open'] and opened['expanded'] == 'true' and opened['locked'] == 'hidden' and opened['veil']
+        page.screenshot(path=str(DOCS / 'home-mobile.png'), full_page=False)
+        page.keyboard.press('Tab')
+        inside = page.evaluate("() => document.querySelector('.nav-links').contains(document.activeElement)")
+        assert inside, 'focus must be trapped inside the open drawer'
+        page.keyboard.press('Escape')
+        page.wait_for_timeout(350)
+        closed = page.evaluate('''() => {const nav=document.querySelector('.nav-links');
+          return {open:nav.classList.contains('mobile-open'),
+                  expanded:document.querySelector('[data-action="menu"]').getAttribute('aria-expanded')}}''')
+        assert not closed['open'] and closed['expanded'] == 'false'
+        page.locator('[data-action="menu"]').click()
+        page.wait_for_timeout(300)
+        page.mouse.click(195, 620)
+        page.wait_for_timeout(350)
+        assert page.evaluate("() => !document.querySelector('.nav-links').classList.contains('mobile-open')"), 'outside click must close the drawer'
+        print('drawer: Escape, outside click, focus trap and scroll lock all behave')
+        page.set_viewport_size({'width': 1440, 'height': 900})
+
+        # Signup, then a project carrying a cover AND screenshots.
+        page.goto(base + '/submit', wait_until='networkidle')
+        page.locator('.gate-card').wait_for()
+        page.locator('.gate-card [href="/join"]').click()
+        page.locator('#full-name').fill('Morgan Builder')
+        page.locator('#user-name').fill('morganbuilds')
+        page.locator('#email').fill('morgan@test.example')
+        meter = page.locator('#pw-meter')
+        page.locator('#password').fill('strong')
+        page.wait_for_timeout(200)
+        weak_score = meter.get_attribute('data-score')
+        page.locator('#password').fill('strong-user-password-9')
+        page.wait_for_timeout(200)
+        strong_score = meter.get_attribute('data-score')
+        print(f'password meter: weak={weak_score} strong={strong_score}')
+        assert weak_score == '1' and strong_score == '3'
+        page.locator('#auth-form button[type=submit]').click()
+        page.locator('#project-form').wait_for(timeout=15000)
+
+        page.locator('#cover').set_input_files({'name': 'morgan-cover.png', 'mimeType': 'image/png', 'buffer': artwork()})
+        page.locator('#screenshots').set_input_files([
+            {'name': 'dashboard.png', 'mimeType': 'image/png', 'buffer': screenshot(720, 480, (72, 52, 150), 'Dashboard')},
+            {'name': 'mobile.png', 'mimeType': 'image/png', 'buffer': screenshot(520, 760, (30, 120, 130), 'Mobile')}])
+        page.wait_for_timeout(600)
+        tiles = page.locator('.media-tile').count()
+        spec = page.locator('#cover-zone .upload-spec').inner_text()
+        print(f'upload feedback: {tiles} screenshot tiles, cover spec "{spec}"')
+        assert tiles == 2 and '×' in spec
+        page.locator('.media-tile.is-new').first.screenshot(path=str(DOCS / 'upload-tile.png'))
+
+        page.locator('#title').fill('Aurora Habit Tracker')
+        page.locator('#tagline').fill('A calmer way to track your everyday routines.')
+        page.locator('#description').fill('Aurora is an independent habit-tracking web application that celebrates small everyday progress, thoughtful routines and reflection with a clean, distraction-free interface.')
+        page.locator('#category').select_option('Web App')
+        page.locator('#stage').select_option('Beta')
+        page.locator('#tech').fill('Python, FastAPI, JavaScript')
+        page.locator('#tags').fill('wellness, productivity')
+        page.locator('#repo_url').fill('https://github.com/example/aurora')
+        page.screenshot(path=str(DOCS / 'submission-form.png'), full_page=True)
+
+        # A dead session must not destroy what the maker typed.
+        page.context.clear_cookies()
+        page.locator('#project-form button[type=submit]').click()
+        page.wait_for_timeout(1400)
+        assert '/login' in page.url, page.url
+        page.locator('#email').fill('morgan@test.example')
+        page.locator('#password').fill('strong-user-password-9')
+        page.locator('#auth-form button[type=submit]').click()
+        page.locator('#project-form').wait_for(timeout=15000)
+        page.wait_for_timeout(400)
+        restored = page.locator('#title').input_value()
+        kept_tiles = page.locator('.media-tile').count()
+        print(f'session recovery: title restored to {restored!r}, {kept_tiles} picked screenshots still queued')
+        assert restored == 'Aurora Habit Tracker' and kept_tiles == 2
+
+        page.locator('#project-form button[type=submit]').click()
+        page.locator('.detail-header h1').wait_for(timeout=15000)
+        assert 'Aurora Habit Tracker' in page.locator('.detail-header h1').inner_text()
+        shots = page.locator('.shot').count()
+        # The cover was picked before the session dropped, so it must have travelled with the draft.
+        cover = page.locator('.detail-art .cover-art.has-photo img')
+        assert cover.count() == 1, 'cover image survived the 401 round-trip'
+        assert cover.evaluate('img => img.decode().then(()=>img.naturalWidth)') > 150
+        uploads = page.locator('.snapshot-row', has_text='Uploads').inner_text()
+        print(f'published project: {shots} screenshots, cover kept, snapshot row {uploads!r}')
+        assert shots == 2 and '3 images' in uploads
+        # Screenshots live below the fold: they should only reveal once scrolled into view.
+        assert page.locator('.shot.is-visible').count() == 0
+        page.locator('.shot-grid').scroll_into_view_if_needed()
+        page.wait_for_timeout(900)
+        assert page.locator('.shot.is-visible').count() == shots
+        page.screenshot(path=str(DOCS / 'published-project.png'), full_page=True)
+
+        page.locator('.shot').first.click()
+        page.locator('.lightbox.is-open').wait_for(timeout=5000)
+        caption = page.locator('.lightbox figcaption').inner_text()
+        page.screenshot(path=str(DOCS / 'lightbox.png'))
+        page.keyboard.press('ArrowRight')
+        page.wait_for_timeout(300)
+        second = page.locator('.lightbox figcaption').inner_text()
+        page.keyboard.press('Escape')
+        page.wait_for_timeout(400)
+        assert page.locator('.lightbox.is-open').count() == 0
+        print(f'lightbox: "{caption}" -> "{second}" -> closed with Escape')
+
+        before = int(page.locator('#like-count').inner_text())
+        page.locator('[data-action="like"]').click()
+        page.wait_for_timeout(600)
+        after = int(page.locator('#like-count').inner_text())
+        assert after == before + 1 and page.locator('.btn.liked').count() == 1
+        print(f'like: {before} -> {after}')
+
+        # Discover it the way a visitor would.
+        page.locator('.nav-links [href="/explore"]').click()
+        page.locator('#search-input').fill('Aurora Habit')
+        page.wait_for_timeout(700)
+        assert page.locator('.project-card').count() == 1
+        assert page.locator('.project-title').inner_text() == 'Aurora Habit Tracker'
+        print('public search discovery: passed')
+
+        # Editing must let go of one screenshot and keep the rest.
+        page.locator('.project-title').click()
+        page.locator('[href^="/edit/"]').click()
+        page.locator('#project-form').wait_for(timeout=15000)
+        assert page.locator('#title').input_value() == 'Aurora Habit Tracker'
+        listed = [tile.replace('\n', ' ') for tile in page.locator('.media-tile').all_inner_texts()]
+        print(f'edit form lists {len(listed)} stored images: {listed}')
+        assert page.locator('.media-tile').count() == 3, 'cover + 2 screenshots should be listed'
+        page.locator('.media-tile [data-action="drop-existing-media"]').last.click()
+        page.wait_for_timeout(250)
+        page.locator('#title').fill('Aurora Habit Studio')
+        page.locator('#stage').select_option('Launched')
+        page.locator('#project-form button[type=submit]').click()
+        page.locator('.detail-header h1').wait_for(timeout=15000)
+        assert 'Aurora Habit Studio' in page.locator('.detail-header h1').inner_text()
+        assert page.locator('.shot').count() == 1, 'the removed screenshot must be gone'
+        assert 'Launched' in page.locator('.detail-header .stage').inner_text()
+        print('owner edit, screenshot removal and published update: passed')
+
+        # Dropping the last stored screenshot sends keep_media as an empty list, which the
+        # browser cannot distinguish from omitting it unless the server checks presence.
+        page.locator('[href^="/edit/"]').click()
+        page.locator('#project-form').wait_for(timeout=15000)
+        assert page.locator('.media-tile').count() == 2, 'cover + the one screenshot left should be listed'
+        page.locator('.media-tile [data-action="drop-existing-media"]').click()
+        page.wait_for_timeout(250)
+        assert page.locator('.media-tile:not(.is-dropped)').count() == 1, 'only the cover should stay queued'
+        assert page.locator('.media-tile [data-action="restore-media"]').count() == 1, 'a dropped shot must be restorable'
+        page.locator('#project-form button[type=submit]').click()
+        page.locator('.detail-header h1').wait_for(timeout=15000)
+        assert page.locator('.shot').count() == 0, 'an emptied gallery must stay empty'
+        assert page.locator('.detail-art .cover-art.has-photo img').count() == 1, 'the cover must survive'
+        page.screenshot(path=str(DOCS / 'gallery-cleared.png'), full_page=False)
+        print('clearing the whole screenshot gallery from the edit form: passed')
+
+        # Maker profile resolves and animates its counters.
+        page.goto(base + '/makers/morganbuilds', wait_until='networkidle')
+        page.locator('.maker-header').wait_for(timeout=10000)
+        page.wait_for_timeout(1200)
+        stats = page.locator('.maker-stats .stat b').all_inner_texts()
+        print('maker profile stats:', stats)
+        assert int(stats[0]) == 1
+        page.screenshot(path=str(DOCS / 'maker-profile.png'), full_page=True)
+        page.goto(base + '/makers/nobody-at-all', wait_until='networkidle')
+        assert 'No creator found' in page.locator('.gate-card h1').inner_text()
+        print('unknown creator: honest 404 instead of a fabricated profile')
+
+        # An unknown client route must say so instead of quietly rendering the explore grid.
+        page.goto(base + '/a-path-nobody-wrote', wait_until='networkidle')
+        page.locator('.gate-card h1').wait_for(timeout=10000)
+        assert 'Nothing lives at this address' in page.locator('.gate-card h1').inner_text()
+        assert page.locator('.project-card').count() == 0, 'the not-found route leaked the grid'
+        assert 'Page not found' in page.title(), page.title()
+        page.screenshot(path=str(DOCS / 'not-found.png'), full_page=False)
+        print('unknown route: honest not-found page instead of the explore grid')
+
+        # A broken %xx in a URL must degrade, not throw and leave the shell empty.
+        page.goto(base + '/p/%zz-not-a-slug', wait_until='networkidle')
+        page.locator('.gate-card h1, .detail-header h1').first.wait_for(timeout=10000)
+        assert page.locator('#app').inner_html().strip(), 'a malformed URL blanked the page'
+        print('malformed percent-encoded path: handled without a crash')
+
+        # A signed-out visitor is gated on /submit, and the gate offers a way through.
+        signed_out = browser.new_context(viewport={'width': 1440, 'height': 900})
+        guest = signed_out.new_page()
+        guest.goto(base + '/submit', wait_until='networkidle')
+        guest.locator('.gate-card h1').wait_for(timeout=10000)
+        assert guest.locator('#project-form').count() == 0, 'the publish form rendered without a session'
+        assert guest.locator('.gate-card [href="/join"]').count() == 1, 'no path to create an account'
+        assert guest.locator('.gate-card [href="/login"]').count() == 1, 'no path to sign in'
+        guest.locator('.gate-card [href="/join"]').click()
+        guest.locator('#auth-form').wait_for(timeout=10000)
+        assert guest.locator('#full-name').count() == 1, 'the join form lost its name field'
+        guest.goto(base + '/dashboard', wait_until='networkidle')
+        guest.locator('#auth-form').wait_for(timeout=10000)
+        assert '/login' in guest.url, f'/dashboard should send a signed-out visitor to /login, got {guest.url}'
+        assert guest.locator('.project-card, .dashboard-page').count() == 0, 'a private dashboard leaked'
+        signed_out.close()
+        print('signed-out gates: /submit gates in place, /dashboard redirects to /login')
+
+        # Reduced motion must stay complete but still.
+        calm = browser.new_context(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
+        calm_page = calm.new_page()
+        calm_page.goto(base + '/', wait_until='networkidle')
+        calm_page.locator('.project-card').first.wait_for(timeout=15000)
+        calm_page.locator('#discover').scroll_into_view_if_needed()
+        calm_page.wait_for_timeout(600)
+        visible = calm_page.locator('.project-card.is-visible').count()
+        opacity = calm_page.locator('.project-card').first.evaluate('el => getComputedStyle(el).opacity')
+        moving = calm_page.evaluate('() => document.getAnimations().filter(a => a.playState === "running").length')
+        print(f'prefers-reduced-motion: {visible} cards visible, opacity {opacity}, {moving} running animations')
+        assert visible >= 6 and opacity == '1' and moving == 0
+        calm_page.screenshot(path=str(DOCS / 'reduced-motion.png'), full_page=True)
+        calm.close()
+
+        unexpected = [f'{text} <- {url}' for text, url in console if url not in expected_failures]
+        if unexpected:
+            print('console errors:', unexpected[:5])
+        assert not unexpected, unexpected[:5]
+        assert not errors, errors
+        browser.close()
     print('Visual and browser-interaction smoke test: PASSED')
 
 
-if __name__=='__main__':
+def preview():
+    port = free_port()
+    base = f'http://127.0.0.1:{port}'
+    server = uvicorn.Server(uvicorn.Config(main.app, host='127.0.0.1', port=port, log_level='error'))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(80):
+            try:
+                if httpx.get(base + '/api/health', timeout=1).status_code == 200:
+                    break
+            except Exception:
+                time.sleep(0.25)
+        else:
+            raise RuntimeError('uvicorn did not come up')
+        seed_pagination(base)
+        if os.environ.get('UNIVORYA_HEADED'):
+            print('Opening a visible Chromium window at', base)
+        run(base)
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        shutil.rmtree(DATA, ignore_errors=True)
+
+
+if __name__ == '__main__':
     preview()

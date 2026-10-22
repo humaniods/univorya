@@ -62,4 +62,4 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 
 ## Release gate
 
-**Passed locally:** `pytest` (16 API tests), Chromium browser smoke (signup → image upload → publish → search → edit), real HTTP smoke script when a server is running. **Not passed/verified:** GitHub-hosted CI run, live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.
+**Passed locally:** `pytest --cov=app` (51 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates), real HTTP smoke script when a server is running. **Not passed/verified:** GitHub-hosted CI run, live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.

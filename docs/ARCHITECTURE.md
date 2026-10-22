@@ -36,7 +36,7 @@ flowchart LR
 
 ## Known risks and mitigations before public launch
 
-- No verified emails; abusive signups possible. Add email verification, bot checks and throttles at edge.
+- No verified emails; abusive signups are still possible. In-process caps exist (10 failed logins per account, 30 per client, 15 signups per client, each inside a 10-minute window), but they live in one Python process: add email verification, bot checks and shared/edge rate limiting before a public launch. The per-client caps key on the socket peer address, and Uvicorn is started with `--proxy-headers`, whose trusted-Proxy list defaults to `127.0.0.1` — behind a same-host reverse proxy that header must be *overwritten* by the proxy (and `--forwarded-allow-ips` set) or the client buckets are spoofable; see the deployment note in [TEST_REPORT.md](TEST_REPORT.md).
 - Mismatched Origin blocked where sent; full CSRF assessment and dedicated token strategy recommended for public production.
 - SQLite is simple but not a managed/high-availability database; migrate to Postgres and object storage as usage grows.
 - Missing report/takedown workflow; required before unmoderated public publishing.
