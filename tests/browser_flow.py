@@ -11,6 +11,7 @@ import io
 import os
 import shutil
 import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -321,6 +322,16 @@ def run(base):
         listed = [tile.replace('\n', ' ') for tile in page.locator('.media-tile').all_inner_texts()]
         print(f'edit form lists {len(listed)} stored images: {listed}')
         assert page.locator('.media-tile').count() == 3, 'cover + 2 screenshots should be listed'
+        # Every stored row came from project_media, so each tile carries that row's own facts.
+        months = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+        stamped_tiles = page.locator('.media-tile time')
+        assert stamped_tiles.count() == 3, 'a stored upload lost its upload date'
+        stamped = [(stamped_tiles.nth(i).inner_text(), stamped_tiles.nth(i).get_attribute('datetime')) for i in range(3)]
+        print(f'stored uploads dated from their own rows: {stamped}')
+        for label, iso in stamped:
+            assert any(month in label for month in months), (label, iso)
+            assert len(label.split()[-1]) == 4 and label.split()[-1].isdigit(), label
+            assert iso.startswith('20') and 'T' in iso, iso
         page.locator('.media-tile [data-action="drop-existing-media"]').last.click()
         page.wait_for_timeout(250)
         page.locator('#title').fill('Aurora Habit Studio')
@@ -392,6 +403,84 @@ def run(base):
         assert guest.locator('.project-card, .dashboard-page').count() == 0, 'a private dashboard leaked'
         signed_out.close()
         print('signed-out gates: /submit gates in place, /dashboard redirects to /login')
+
+        # Every category the product offers has to survive the same journey: form -> database -> animated gallery.
+        sweep = ['Web App', 'Mobile App', 'AI & ML', 'Dev Tool', 'Open Source', 'Design', 'Idea', 'Other']
+        stages = ['Idea', 'Building', 'Beta', 'Launched']
+        swept = {}
+        for index, category in enumerate(sweep):
+            page.goto(base + '/submit', wait_until='networkidle')
+            page.locator('#project-form').wait_for(timeout=15000)
+            page.locator('#title').fill(f'{category} Sweep Entry {index}')
+            page.locator('#tagline').fill('A tagline written by the browser smoke test to clear validation.')
+            page.locator('#description').fill('An honest description of a showcase entry, here to prove that this category '
+                                              'reaches the database, the gallery and the motion layer like every other one.')
+            page.locator('#category').select_option(category)
+            page.locator('#stage').select_option(stages[index % len(stages)])
+            page.locator('#tech').fill('FastAPI, SQLite')
+            page.locator('#tags').fill('sweep, ' + category.lower().replace(' ', '-').replace('&', 'and'))
+            page.locator('#cover').set_input_files({'name': 'sweep-cover.png', 'mimeType': 'image/png',
+                                                    'buffer': screenshot(760, 500, (40 + index * 26, 96, 205))})
+            if index % 2 == 0:
+                page.locator('#screenshots').set_input_files([
+                    {'name': 'sweep-shot.png', 'mimeType': 'image/png',
+                     'buffer': screenshot(640, 420, (205, 130 - index * 11, 74))}])
+            page.locator('#project-form button[type=submit]').click()
+            page.locator('.detail-header h1').wait_for(timeout=20000)
+            swept[category] = page.url.rstrip('/').rsplit('/', 1)[-1]
+        print('published through the real form, one per category:', ', '.join(swept))
+
+        # The rows have to exist in the database, not just on the screen.
+        con = sqlite3.connect(main.DB_PATH)
+        con.row_factory = sqlite3.Row
+        stored = con.execute("""SELECT p.title, p.category, p.stage, COUNT(m.id) media,
+                                       SUM(m.kind='cover') covers, SUM(m.kind='screenshot') shots
+                                FROM projects p LEFT JOIN project_media m ON m.project_id=p.id
+                                WHERE p.title LIKE '%Sweep Entry%' GROUP BY p.id
+                                ORDER BY p.id""").fetchall()
+        con.close()
+        assert len(stored) == 8, [row['title'] for row in stored]
+        for index, category in enumerate(sweep):
+            row = stored[index]
+            assert row['category'] == category, (row['title'], row['category'])
+            assert row['stage'] == stages[index % len(stages)], (row['title'], row['stage'])
+            assert row['covers'] == 1, f'{category} lost its cover row'
+            assert row['shots'] == (1 if index % 2 == 0 else 0), f'{category} screenshot rows: {row["shots"]}'
+        print('database rows per category:',
+              '; '.join(f"{row['category']}={row['media']}img" for row in stored))
+
+        # And the motion layer has to actually finish on the creator's own pages.
+        def still_hidden(path, selector):
+            page.goto(base + path, wait_until='networkidle')
+            page.wait_for_timeout(700)
+            height = page.evaluate('() => document.body.scrollHeight')
+            for offset in range(0, height + 400, 400):
+                page.evaluate(f'() => window.scrollTo(0, {offset})')
+                page.wait_for_timeout(90)
+            page.wait_for_timeout(700)
+            cards = page.locator(selector)
+            faded = [cards.nth(i).evaluate('el => getComputedStyle(el).opacity') for i in range(cards.count())]
+            return cards.count(), sum(1 for value in faded if float(value) < 0.05)
+
+        for label, path, selector in [('dashboard', '/dashboard', '.project-card'),
+                                       ('own maker profile', '/makers/morganbuilds', '.project-card'),
+                                       ('category filter', '/explore?category=Design', '.project-card'),
+                                       ('swept project detail', '/p/' + swept['AI & ML'], '.reveal')]:
+            total, hidden = still_hidden(path, selector)
+            assert total and hidden == 0, f'{label}: {hidden} of {total} never animated in'
+            print(f'{label}: all {total} {selector} elements animated to full opacity')
+
+        # The creator sees what they uploaded about each image, from the database row.
+        page.goto(base + '/p/' + swept['AI & ML'], wait_until='networkidle')
+        page.locator('.shot').first.wait_for(timeout=15000)
+        caption = page.locator('.shot-bar').first.inner_text().replace('\n', ' ')
+        page.locator('.shot').first.click()
+        page.locator('.lightbox.is-open').wait_for(timeout=10000)
+        lightbox = page.locator('.lightbox figcaption').inner_text()
+        page.keyboard.press('Escape')
+        print(f'own upload facts on screen: tile "{caption}" / lightbox "{lightbox}"')
+        assert '×' in caption and 'KB' in caption, caption
+        assert '×' in lightbox and 'KB' in lightbox, lightbox
 
         # Reduced motion must stay complete but still.
         calm = browser.new_context(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')

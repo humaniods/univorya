@@ -1,6 +1,7 @@
 """Coverage for the upload pipeline, per-category persistence and the audit hardening fixes."""
 import importlib
 import io
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,18 @@ def test_every_category_persists_project_and_uploads(c):
     listed = c.get('/api/projects?limit=60').json()['projects']
     assert len(listed) == 8
     assert all(p['media'] for p in listed), 'list endpoint must carry media for every card'
+
+
+def test_each_stored_upload_reports_the_row_behind_it(c):
+    assert signup(c).status_code == 201
+    media = c.get('/api/projects/' + publish(c).json()['slug']).json()['project']['media']
+    assert len(media) == 3
+    for item in media:
+        # The tile is only honest about an upload if it carries the timestamp of the row it came from.
+        stored = datetime.fromisoformat(item['uploaded_at'])
+        assert stored.tzinfo is not None and stored <= datetime.now(timezone.utc), item
+    source = (STATIC_DIR / 'app.js').read_text()
+    assert 'formatDate(item.uploaded_at)' in source, 'the creator must see when their own file was stored'
 
 
 def test_metadata_advertises_the_limits_the_client_validates_against(c):

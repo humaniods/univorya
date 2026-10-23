@@ -42,6 +42,7 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 - Keep every generated redirect target same-origin — a canonicalisation helper that emits `//host` is an open redirect.
 - Add basic browser hardening headers and reject mismatched Origin headers on write requests.
 - Display real/synthetic creator content distinctly: demo cards **never** imply real users.
+- Show the maker what their own uploads are: every `project_media` row the API returns is rendered with its kind, pixel size, weight, animation flag and upload date, so no stored fact is fetched and then discarded. Verified in Chromium for all eight categories, publishing through the form and reading the rows back out of SQLite.
 - SQLite and image directory **must** be persistent if deployed; create backup/restore routine.
 - No external hosting or recurring paid resource provisioned without explicit deployment decision.
 
@@ -63,4 +64,4 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 
 ## Release gate
 
-**Passed locally:** `pytest --cov=app` (52 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates), real HTTP smoke script when a server is running. **Not passed/verified:** GitHub-hosted CI run, live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.
+**Passed locally:** `pytest --cov=app` (53 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates → one project per category verified in the database), real HTTP smoke script when a server is running. **Not passed/verified:** GitHub-hosted CI run, live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.

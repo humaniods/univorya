@@ -169,6 +169,7 @@ body.lightbox-open{overflow:hidden}
 .media-tile img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover}
 .media-tile-meta{display:flex;align-items:center;gap:6px;padding:6px 8px;font-size:10px;color:#9c9db3;background:rgba(12,13,24,.7)}
 .media-tile-meta b{color:#d9d2f5;font-weight:700;margin-inline-start:auto}
+.media-tile-meta time{font-variant-numeric:tabular-nums;letter-spacing:.02em}
 .media-tile-meta i{font-style:normal}
 .media-tile.is-dropped{opacity:.34;filter:grayscale(1)}
 .media-tile.is-new{border-color:rgba(163,142,247,.5);box-shadow:0 0 0 3px rgba(163,142,247,.08)}

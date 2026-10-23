@@ -1,11 +1,11 @@
 # Univorya — Local Test Results
 
-**Run date:** 23 October 2026 — the API suite, HTTP smoke and every code fix below were re-run against the
-committed build; the Chromium flow last ran against that same build on 22 October.
+**Run date:** 23 October 2026 — the API suite, HTTP smoke, the Chromium flow and every code fix below were
+re-run against the working build on that date.
 
 | Test suite | Command | Result |
 |---|---|---|
-| API and authorization | `pytest --cov=app -q` | **52 passed** |
+| API and authorization | `pytest --cov=app -q` | **53 passed** |
 | JS syntax | `node --check static/app.js` | **Passed** |
 | Browser UI smoke | `python tests/browser_flow.py` | **Passed** |
 | Real HTTP integration | `python scripts/smoke_http.py` against local Uvicorn | **Passed** |
@@ -23,6 +23,8 @@ committed build; the Chromium flow last ran against that same build on 22 Octobe
   that maps out the form schema.
 - Actual PNG upload, image conversion to WebP, public file serving.
 - **Every category (Web App, Mobile App, AI & ML, Dev Tool, Open Source, Design, Idea, Other) persists its project row plus one `project_media` row per uploaded file, in `[cover, screenshot, screenshot]` order.**
+- **Each media row answers with its own `uploaded_at`** (the row's UTC timestamp, ISO-parseable and never in the
+  future), which is the data behind the date on the creator's own upload tiles.
 - Cover plus four screenshots round-trips through list, detail, download, a partial prune, a text-only edit
   (which must not touch the gallery) and an explicit clear-all.
 - `keep_media` distinguishes *omitted* from *sent empty*: an empty list really does remove every screenshot,
@@ -80,14 +82,26 @@ committed build; the Chromium flow last ran against that same build on 22 Octobe
     instead of throwing and leaving the shell empty.
 13. Signed-out gates: `/submit` shows the join-or-sign-in card rather than a form that cannot save, and
     `/dashboard` redirects to `/login` without leaking a dashboard.
-14. `prefers-reduced-motion: reduce` shows every card at full opacity with zero running animations.
-15. No uncaught page exceptions, and no console errors except the deliberately provoked 401 and the three 404s
+14. **Category sweep through the real form**: one project per category in `CATEGORIES` (Web App, Mobile App,
+    AI & ML, Dev Tool, Open Source, Design, Idea, Other) is published with the cover and screenshot pickers,
+    then the rows are read back **straight out of SQLite** — 8 projects, each with exactly one `cover` row and
+    the expected number of `screenshot` rows, with the stage the form was given. Nothing here goes through the
+    API helper, so a category that only worked over HTTP would still fail this step.
+15. The motion layer is then scrolled through on the creator's own surfaces (dashboard, own maker profile, a
+    category-filtered explore, a swept project page) and every `.reveal` element must reach full opacity —
+    a card that never animates in is invisible, not merely plain.
+16. Each stored tile in the edit form carries the timestamp of its own `project_media` row (`<time>` with an ISO
+    `datetime` attribute), so the creator sees kind, pixel size, weight, animation and upload date per file.
+17. `prefers-reduced-motion: reduce` shows every card at full opacity with zero running animations.
+18. No uncaught page exceptions, and no console errors except the deliberately provoked 401 and the three 404s
     the flow asks for.
 
 The test writes `home-desktop.png`, `home-mobile.png`, `explore-pagination.png`, `upload-tile.png`,
 `submission-form.png`, `published-project.png`, `lightbox.png`, `gallery-cleared.png`, `maker-profile.png`,
 `not-found.png` and `reduced-motion.png` in this folder. `live-home.png` and `live-detail.png` are manual
-captures of a separately started preview instance; the suite does not regenerate them.
+captures of a separately started preview instance; the suite does not regenerate them. `docs/screens/*.png` are
+top-of-page crops of the full-page captures, made only so the README gallery renders at readable heights; they
+are derived from the files above and are not separate observations.
 
 ## Adversarial probe rounds
 
