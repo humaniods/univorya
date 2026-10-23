@@ -1,7 +1,7 @@
 # Univorya — Local Test Results
 
 **Run date:** 23 October 2026 — the API suite, HTTP smoke, the Chromium flow and every code fix below were
-re-run against the working build on that date.
+re-run against the working build on that date, then pushed; the same build passed both GitHub Actions jobs.
 
 | Test suite | Command | Result |
 |---|---|---|
@@ -9,6 +9,7 @@ re-run against the working build on that date.
 | JS syntax | `node --check static/app.js` | **Passed** |
 | Browser UI smoke | `python tests/browser_flow.py` | **Passed** |
 | Real HTTP integration | `python scripts/smoke_http.py` against local Uvicorn | **Passed** |
+| GitHub Actions CI | push to `main` → `.github/workflows/ci.yml` | **Passed — both jobs** ([run 39931824327](https://github.com/humaniods/univorya/actions/runs/39931824327)): `pytest --cov=app --cov-fail-under=85`, `compileall`, `node --check`, and `python tests/browser_flow.py` in a Playwright-installed Chromium |
 
 ## API cases covered
 
@@ -139,8 +140,9 @@ slug's own 404 as a broken request.
 
 ## Not claimed
 
-No GitHub CI success until code is pushed; no live production deployment, public availability, multi-browser
-matrix, full WCAG audit, load tests or penetration test.
+GitHub CI has now run green on the pushed build (both jobs, run 39931824327). Still **not** claimed: a live
+production deployment, public availability, multi-browser matrix, full WCAG audit, load tests or penetration
+test.
 
 **The throttle map is an MVP guard, and its accuracy depends entirely on how the app is deployed.** It is
 in-memory and per process, so multiple workers each hold their own counters and a restart clears them. It keys

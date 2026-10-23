@@ -27,7 +27,7 @@
 | U-09 | Delete project | Only owner may delete; image removed | Implemented; tested |
 | U-10 | Responsive UI | Desktop/mobile, transparent glass panels, no horizontal scrolling at 390px | Implemented; browser tested |
 | U-11 | Transparent samples | Fictional seed cards clearly labeled; disabling via env | Implemented; tested |
-| U-12 | CI/testing | pytest, JS syntax check, Chromium interaction smoke, screenshots | Configured; local tests run; CI awaits repo |
+| U-12 | CI/testing | pytest, JS syntax check, Chromium interaction smoke, screenshots | Implemented; green on GitHub Actions for `main` |
 
 ## Explicit non-goals of MVP
 
@@ -64,4 +64,4 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 
 ## Release gate
 
-**Passed locally:** `pytest --cov=app` (53 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates → one project per category verified in the database), real HTTP smoke script when a server is running. **Not passed/verified:** GitHub-hosted CI run, live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.
+**Passed locally:** `pytest --cov=app` (53 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates → one project per category verified in the database), real HTTP smoke script when a server is running. **Passed on GitHub Actions:** both CI jobs (Python + JS, and the Chromium smoke in Playwright-installed Chromium) on every push to `main`. **Not passed/verified:** live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.
