@@ -28,6 +28,7 @@
 | U-10 | Responsive UI | Desktop/mobile, transparent glass panels, no horizontal scrolling at 390px | Implemented; browser tested |
 | U-11 | Transparent samples | Fictional seed cards clearly labeled; disabling via env | Implemented; tested |
 | U-12 | CI/testing | pytest, JS syntax check, Chromium interaction smoke, screenshots | Implemented; green on GitHub Actions for `main` |
+| U-13 | Local preview of the showcased thing | Creator stores an `http(s)` address on `127.0.0.1`/`localhost`/`::1`; anything else is a 422. The value is returned **only** in the owner's payload, and the project page gives the owner a button plus a `scripts/showcase.py` command that open it in a Chrome window on that machine | Implemented; API + browser tested |
 
 ## Explicit non-goals of MVP
 
@@ -43,6 +44,10 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 - Add basic browser hardening headers and reject mismatched Origin headers on write requests.
 - Display real/synthetic creator content distinctly: demo cards **never** imply real users.
 - Show the maker what their own uploads are: every `project_media` row the API returns is rendered with its kind, pixel size, weight, animation flag and upload date, so no stored fact is fetched and then discarded. Verified in Chromium for all eight categories, publishing through the form and reading the rows back out of SQLite.
+- Let a maker demo something that only runs on their laptop **without** hosting or executing it here: `preview_url`
+  is a loopback address, validated on both verbs, absent from every non-owner payload, and opened by the owner's own
+  browser window or by `scripts/showcase.py`. The MVP non-goal "no running arbitrary uploaded code" still holds —
+  Univorya stores a URL, never a build.
 - SQLite and image directory **must** be persistent if deployed; create backup/restore routine.
 - No external hosting or recurring paid resource provisioned without explicit deployment decision.
 
@@ -64,4 +69,4 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 
 ## Release gate
 
-**Passed locally:** `pytest --cov=app` (58 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates → one project per category verified in the database), real HTTP smoke script when a server is running. **Passed on GitHub Actions:** both CI jobs (Python + JS, and the Chromium smoke in Playwright-installed Chromium) on every push to `main`. **Not passed/verified:** live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.
+**Passed locally:** `pytest --cov=app` (87 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish with a loopback preview address → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates → one project per category verified in the database), real HTTP smoke script when a server is running. **Passed on GitHub Actions:** both CI jobs (Python + JS, and the Chromium smoke in Playwright-installed Chromium) on every push to `main`. **Not passed/verified:** live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.

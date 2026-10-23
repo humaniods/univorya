@@ -134,6 +134,7 @@ def init_db():
           repo_url TEXT DEFAULT '',
           demo_url TEXT DEFAULT '',
           website_url TEXT DEFAULT '',
+          preview_url TEXT NOT NULL DEFAULT '',
           license TEXT DEFAULT '',
           cover_image TEXT DEFAULT '',
           cover_style TEXT DEFAULT 'violet',
@@ -164,6 +165,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_likes_project ON likes(project_id);
         CREATE INDEX IF NOT EXISTS idx_media_project ON project_media(project_id,position);
         """)
+        # CREATE TABLE IF NOT EXISTS never touches an existing table, so a column added after the first
+        # release needs its own migration, or an older database answers SELECT p.* without it.
+        columns = {row["name"] for row in con.execute("PRAGMA table_info(projects)")}
+        if "preview_url" not in columns:
+            con.execute("ALTER TABLE projects ADD COLUMN preview_url TEXT NOT NULL DEFAULT ''")
 
 
 def hash_password(password: str) -> str:
@@ -279,6 +285,23 @@ def safe_url(raw: str) -> str:
     return raw
 
 
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
+
+
+def local_preview_url(raw: str) -> str:
+    """A loopback address a local script later opens in Chrome. Anything else would turn this
+    field into a redirect that runs on the creator's own machine, with no warning page in between."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    p = urlparse(raw)
+    if p.scheme not in ("http", "https") or not p.hostname or p.username or p.password or len(raw) > 300:
+        raise HTTPException(422, "Local preview must be an http(s) URL on this machine")
+    if p.hostname.lower() not in LOCAL_HOSTS:
+        raise HTTPException(422, "Local preview must point at 127.0.0.1 or localhost")
+    return raw
+
+
 def arr(raw: str, max_count=8) -> list[str]:
     values = [clean_text(x) for x in (raw or "").split(",")]
     seen, unique = set(), []
@@ -339,6 +362,8 @@ def project_json(row: sqlite3.Row, viewer_id: int | None = None, media: list[dic
                          "avatar_color": result.pop("creator_color")}
     result["is_demo"] = bool(result["is_demo"])
     result["is_owner"] = bool(viewer_id and viewer_id == result["user_id"])
+    if not result["is_owner"]:
+        result.pop("preview_url", None)
     result["media"] = media if media is not None else []
     result["media_count"] = len(result["media"])
     return result
@@ -619,12 +644,14 @@ def create_project(user: sqlite3.Row = Depends(require_user),
                    description: str = Form(...), category: str = Form(...), stage: str = Form(...),
                    tags: str = Form(""), tech: str = Form(""), repo_url: str = Form(""),
                    demo_url: str = Form(""), website_url: str = Form(""), license: str = Form(""),
+                   preview_url: str = Form(""),
                    cover_style: str = Form("violet"), cover: UploadFile | None = File(None),
                    screenshots: list[UploadFile] | None = File(None)):
     """Publish a project and every image that came with it in one transaction."""
     title, tagline, description, license = map(clean_text, (title, tagline, description, license))
     validate_project(title, tagline, description, category, stage)
     repo_url, demo_url, website_url = map(safe_url, [repo_url, demo_url, website_url])
+    preview_url = local_preview_url(preview_url)
     if len(license) > 70:
         raise HTTPException(422, "License name is too long")
     if cover_style not in COVER_STYLES:
@@ -636,10 +663,10 @@ def create_project(user: sqlite3.Row = Depends(require_user),
     try:
         with db() as con:
             project_id = con.execute("""INSERT INTO projects(slug,user_id,title,tagline,description,category,stage,
-                tags,tech,repo_url,demo_url,website_url,license,cover_image,cover_style,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tags,tech,repo_url,demo_url,website_url,preview_url,license,cover_image,cover_style,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (slug, user["id"], title, tagline, description, category, stage,
-                 json.dumps(arr(tags), ensure_ascii=False), json.dumps(arr(tech), ensure_ascii=False), repo_url, demo_url, website_url, license,
+                 json.dumps(arr(tags), ensure_ascii=False), json.dumps(arr(tech), ensure_ascii=False), repo_url, demo_url, website_url, preview_url, license,
                  "", cover_style, now, now)).lastrowid
             cover_image = ""
             for kind, raw in blobs:
@@ -663,6 +690,7 @@ def update_project(slug: str, user: sqlite3.Row = Depends(require_user),
                    description: str = Form(...), category: str = Form(...), stage: str = Form(...),
                    tags: str = Form(""), tech: str = Form(""), repo_url: str = Form(""),
                    demo_url: str = Form(""), website_url: str = Form(""), license: str = Form(""),
+                   preview_url: str = Form(""),
                    cover_style: str = Form("violet"), cover: UploadFile | None = File(None),
                    screenshots: list[UploadFile] | None = File(None), keep_media: str | None = Form(None)):
     """Edit only the caller's project; preserve slug and older cover unless replaced.
@@ -674,6 +702,7 @@ def update_project(slug: str, user: sqlite3.Row = Depends(require_user),
     title, tagline, description, license = map(clean_text, (title, tagline, description, license))
     validate_project(title, tagline, description, category, stage)
     repo_url, demo_url, website_url = map(safe_url, [repo_url, demo_url, website_url])
+    preview_url = local_preview_url(preview_url)
     if len(license) > 70:
         raise HTTPException(422, "License name is too long")
     if cover_style not in COVER_STYLES:
@@ -711,10 +740,10 @@ def update_project(slug: str, user: sqlite3.Row = Depends(require_user),
                     (row["id"],))):
                 con.execute("UPDATE project_media SET position=? WHERE id=?", (position, item["id"]))
             con.execute("""UPDATE projects SET title=?,tagline=?,description=?,category=?,stage=?,tags=?,tech=?,
-                repo_url=?,demo_url=?,website_url=?,license=?,cover_image=?,cover_style=?,updated_at=?
+                repo_url=?,demo_url=?,website_url=?,preview_url=?,license=?,cover_image=?,cover_style=?,updated_at=?
                 WHERE id=?""",
                 (title, tagline, description, category, stage,
-                 json.dumps(arr(tags), ensure_ascii=False), json.dumps(arr(tech), ensure_ascii=False), repo_url, demo_url, website_url, license,
+                 json.dumps(arr(tags), ensure_ascii=False), json.dumps(arr(tech), ensure_ascii=False), repo_url, demo_url, website_url, preview_url, license,
                  cover_image, cover_style, utcnow(), row["id"]))
     except Exception:
         for file in written:

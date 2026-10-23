@@ -234,3 +234,13 @@ main:focus{outline:none}
   .shot-bar{transform:none;opacity:1}
   .count-up{opacity:1!important}
 }
+
+/* Creator-only local preview: the loopback address the creator stored, plus the
+   command that opens it in its own Chrome window. Owner-only markup, so this is
+   the only place the value is ever rendered. */
+.local-preview-box{border-color:rgba(159,137,237,.34)}
+.preview-target{display:flex;align-items:center;gap:8px;margin:0 0 15px;color:#cdc4e8;font-size:12px}
+.preview-target svg{color:#a68cf6;flex-shrink:0}
+.preview-target code,.preview-note code{font-family:ui-monospace,'SFMono-Regular',Menlo,monospace;font-size:11px;
+  background:rgba(255,255,255,.07);padding:3px 6px;border-radius:6px;overflow-wrap:anywhere}
+.preview-note{margin:14px 0 0;font-size:10px;line-height:1.65;color:#8f89a8}

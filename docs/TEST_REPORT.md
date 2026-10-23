@@ -5,7 +5,7 @@ re-run against the working build on that date, then pushed; the same build passe
 
 | Test suite | Command | Result |
 |---|---|---|
-| API and authorization | `pytest --cov=app -q` | **58 passed** |
+| API and authorization | `pytest --cov=app -q` | **87 passed** |
 | JS syntax | `node --check static/app.js` | **Passed** |
 | Browser UI smoke | `python tests/browser_flow.py` | **Passed** |
 | Real HTTP integration | `python scripts/smoke_http.py` against local Uvicorn | **Passed** |
@@ -65,6 +65,19 @@ re-run against the working build on that date, then pushed; the same build passe
   instance is reused with the browser pointed at it, and `--temp` redirects `UNIVORYA_DATA_DIR` away from `data/`
   (`tests/test_preview_script.py`). Observed live: the log shows `GET /api/health` followed by the browser's own
   `GET /`, `/styles.css`, `/app.js`, `/api/auth/me` and `/api/metadata`.
+- **A preview address is loopback-only and owner-only** (`tests/test_local_preview.py`, 29 cases):
+  `127.0.0.1`, `localhost`, `::1` and `LOCALHOST` are accepted; a public host, a private LAN address,
+  `localhost.evil.com`, embedded credentials, `javascript:`, `file://` and free text are each a 422 on POST and
+  on PUT, and a refused PUT leaves the stored value alone. The key is present in the owner's detail and list
+  payloads and **absent** (not empty — absent) from an anonymous and a second-account payload, on detail, list and
+  `?creator=` results.
+- **A database from before the column is migrated, not replaced:** `init_db()` runs an idempotent
+  `PRAGMA table_info`/`ALTER TABLE` after the schema script, so an existing `data/univorya.sqlite3` gains
+  `preview_url` with its rows intact, and booting twice does not add it twice.
+- `scripts/showcase.py` reads the address out of SQLite in read-only mode and refuses to launch anything unless
+  the stored value is loopback; it reports a missing database, an unknown slug, a project with no address, a
+  server that is not listening and a missing Chrome binary as separate, actionable failures; `--print` resolves
+  without touching a browser, and the launch it does perform passes `--app=<url>` plus its own `--user-data-dir`.
 
 ## Browser UI smoke
 
@@ -76,8 +89,11 @@ re-run against the working build on that date, then pushed; the same build passe
 4. Zero horizontal overflow at 320, 390, 768 and 1024 px.
 5. Mobile drawer: opens, sets `aria-expanded`, traps Tab, closes on Escape and outside click, locks body scroll.
 6. Password strength meter scores weak vs strong input.
-7. Cover and screenshot pickers show real dimensions and byte size; a session expiring mid-submit keeps the typed draft **and** the queued images through re-login.
-8. Published project renders its cover plus screenshot gallery, lightbox arrows, caption, and Escape-to-close.
+7. Cover and screenshot pickers show real dimensions and byte size; a session expiring mid-submit keeps the typed draft **and** the queued images **and** the private loopback preview address through re-login.
+8. Published project renders its cover plus screenshot gallery, lightbox arrows, caption, and Escape-to-close. The
+   owner also gets the **ON THIS MACHINE** panel with the stored address; clicking `Open on this machine` really
+   produces a second browser window, and the flow asserts that window's URL equals the stored address and that the
+   page inside it rendered.
 9. Like, public search, owner edit that drops one screenshot, maker profile counters, and the 404 state.
 10. A second edit that removes the **last** stored screenshot: the tile flips to restorable, and after saving the
     detail page has no screenshots left while the cover survives — this is the case that silently kept the
@@ -87,12 +103,16 @@ re-run against the working build on that date, then pushed; the same build passe
 12. A malformed percent-encoded path (`/p/%zz-not-a-slug`) is decoded defensively and still paints a real view
     instead of throwing and leaving the shell empty.
 13. Signed-out gates: `/submit` shows the join-or-sign-in card rather than a form that cannot save, and
-    `/dashboard` redirects to `/login` without leaking a dashboard.
+    `/dashboard` redirects to `/login` without leaking a dashboard. The same signed-out page loads the creator's
+    project and shows **no** preview panel, and its `fetch('/api/projects/<slug>')` answer has no `preview_url`
+    key — checked in the DOM and in the JSON.
 14. **Category sweep through the real form**: one project per category in `CATEGORIES` (Web App, Mobile App,
     AI & ML, Dev Tool, Open Source, Design, Idea, Other) is published with the cover and screenshot pickers,
     then the rows are read back **straight out of SQLite** — 8 projects, each with exactly one `cover` row and
     the expected number of `screenshot` rows, with the stage the form was given. Nothing here goes through the
-    API helper, so a category that only worked over HTTP would still fail this step.
+    API helper, so a category that only worked over HTTP would still fail this step. The same read-back confirms
+    the edited project still carries the loopback address the form was given, and that the submission the server
+    refused (a `https://deployed.example.com` preview address, rejected in `#project-error`) never became a row.
 15. The motion layer is then scrolled through on the creator's own surfaces (dashboard, own maker profile, a
     category-filtered explore, a swept project page) and every `.reveal` element must reach full opacity —
     a card that never animates in is invisible, not merely plain.

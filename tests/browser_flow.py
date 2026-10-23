@@ -252,6 +252,10 @@ def run(base):
         page.locator('#tech').fill('Python, FastAPI, JavaScript')
         page.locator('#tags').fill('wellness, productivity')
         page.locator('#repo_url').fill('https://github.com/example/aurora')
+        # The creator's preview target has to be a server on this machine, so the smoke test points
+        # it at the app itself: a real loopback URL that answers, and can be proven to open.
+        preview_target = base + '/explore'
+        page.locator('#preview_url').fill(preview_target)
         page.screenshot(path=str(DOCS / 'submission-form.png'), full_page=True)
 
         # A dead session must not destroy what the maker typed.
@@ -266,8 +270,11 @@ def run(base):
         page.wait_for_timeout(400)
         restored = page.locator('#title').input_value()
         kept_tiles = page.locator('.media-tile').count()
-        print(f'session recovery: title restored to {restored!r}, {kept_tiles} picked screenshots still queued')
+        restored_preview = page.locator('#preview_url').input_value()
+        print(f'session recovery: title restored to {restored!r}, {kept_tiles} picked screenshots still queued, '
+              f'local preview address restored to {restored_preview!r}')
         assert restored == 'Aurora Habit Tracker' and kept_tiles == 2
+        assert restored_preview == preview_target, 'the private loopback address was lost with the draft'
 
         page.locator('#project-form button[type=submit]').click()
         page.locator('.detail-header h1').wait_for(timeout=15000)
@@ -280,6 +287,13 @@ def run(base):
         uploads = page.locator('.snapshot-row', has_text='Uploads').inner_text()
         print(f'published project: {shots} screenshots, cover kept, snapshot row {uploads!r}')
         assert shots == 2 and '3 images' in uploads
+        detail_url = page.url
+        # The creator gets their stored loopback address back; nobody else is offered this box at all.
+        preview_box = page.locator('.local-preview-box')
+        assert preview_box.count() == 1, 'the owner lost the local preview panel'
+        assert preview_box.locator('code').first.inner_text() == preview_target
+        assert preview_box.locator('[data-action="open-local-preview"]').count() == 1
+        assert 'scripts/showcase.py' in preview_box.inner_text(), 'the terminal route was not offered'
         # Screenshots live below the fold: they should only reveal once scrolled into view.
         assert page.locator('.shot.is-visible').count() == 0
         page.locator('.shot-grid').scroll_into_view_if_needed()
@@ -298,6 +312,16 @@ def run(base):
         page.wait_for_timeout(400)
         assert page.locator('.lightbox.is-open').count() == 0
         print(f'lightbox: "{caption}" -> "{second}" -> closed with Escape')
+
+        # Pressing the owner's button must really hand the address to another browser window.
+        # This runs after the reveal checks because clicking scrolls the aside into view.
+        with page.expect_popup(timeout=15000) as popped:
+            page.locator('.local-preview-box [data-action="open-local-preview"]').click()
+        window = popped.value
+        window.wait_for_selector('.project-card', timeout=15000)
+        assert window.url.rstrip('/') == preview_target.rstrip('/'), window.url
+        print(f'local preview opened in its own window at {window.url}')
+        window.close()
 
         before = int(page.locator('#like-count').inner_text())
         page.locator('[data-action="like"]').click()
@@ -319,6 +343,8 @@ def run(base):
         page.locator('[href^="/edit/"]').click()
         page.locator('#project-form').wait_for(timeout=15000)
         assert page.locator('#title').input_value() == 'Aurora Habit Tracker'
+        assert page.locator('#preview_url').input_value() == preview_target, \
+            'the edit form must prefill the stored loopback address'
         listed = [tile.replace('\n', ' ') for tile in page.locator('.media-tile').all_inner_texts()]
         print(f'edit form lists {len(listed)} stored images: {listed}')
         assert page.locator('.media-tile').count() == 3, 'cover + 2 screenshots should be listed'
@@ -356,6 +382,7 @@ def run(base):
         page.locator('.detail-header h1').wait_for(timeout=15000)
         assert page.locator('.shot').count() == 0, 'an emptied gallery must stay empty'
         assert page.locator('.detail-art .cover-art.has-photo img').count() == 1, 'the cover must survive'
+        assert page.locator('.local-preview-box').count() == 1, 'editing wiped the stored preview address'
         page.screenshot(path=str(DOCS / 'gallery-cleared.png'), full_page=False)
         print('clearing the whole screenshot gallery from the edit form: passed')
 
@@ -401,8 +428,35 @@ def run(base):
         guest.locator('#auth-form').wait_for(timeout=10000)
         assert '/login' in guest.url, f'/dashboard should send a signed-out visitor to /login, got {guest.url}'
         assert guest.locator('.project-card, .dashboard-page').count() == 0, 'a private dashboard leaked'
+        # The creator's loopback address is not public information, in the DOM or in the API.
+        guest.goto(detail_url, wait_until='networkidle')
+        guest.locator('.detail-header h1').wait_for(timeout=10000)
+        assert guest.locator('.local-preview-box').count() == 0, 'a visitor was shown the creator\'s local address'
+        payload = guest.evaluate("""async slug => (await (await fetch('/api/projects/' + slug)).json()).project""",
+                                 detail_url.rstrip('/').rsplit('/', 1)[-1])
+        assert 'preview_url' not in payload, f'the API handed a visitor {payload.get("preview_url")!r}'
+        print('local preview address: absent from a signed-out visitor\'s DOM and API payload')
         signed_out.close()
         print('signed-out gates: /submit gates in place, /dashboard redirects to /login')
+
+        # A public URL typed into the private field must be refused, visibly, through the real form.
+        page.goto(base + '/submit', wait_until='networkidle')
+        page.locator('#project-form').wait_for(timeout=15000)
+        page.locator('#title').fill('Project With A Deployed Preview')
+        page.locator('#tagline').fill('A tagline that clears validation so the server can refuse the address.')
+        page.locator('#description').fill('An honest description long enough to pass every rule except the one this '
+                                          'step is testing, which is that a preview address stays on this machine.')
+        page.locator('#preview_url').fill('https://deployed.example.com')
+        page.locator('#project-form button[type=submit]').click()
+        page.wait_for_timeout(1400)
+        refused = page.locator('#project-error').inner_text()
+        assert '/p/' not in page.url, 'a non-loopback preview address was published'
+        assert 'preview' in refused.lower(), refused
+        print('the form refused a public preview address:', refused)
+        # Playwright's fill() fires the input event, so this also rewrites the browser draft that
+        # the sweep below restores from; leaving the rejected value queued would fail every entry.
+        page.locator('#preview_url').fill('')
+        page.wait_for_timeout(300)
 
         # Every category the product offers has to survive the same journey: form -> database -> animated gallery.
         sweep = ['Web App', 'Mobile App', 'AI & ML', 'Dev Tool', 'Open Source', 'Design', 'Idea', 'Other']
@@ -438,8 +492,14 @@ def run(base):
                                 FROM projects p LEFT JOIN project_media m ON m.project_id=p.id
                                 WHERE p.title LIKE '%Sweep Entry%' GROUP BY p.id
                                 ORDER BY p.id""").fetchall()
+        refused_row = con.execute("SELECT 1 FROM projects WHERE title LIKE '%Deployed Preview%'").fetchone()
+        aurora = con.execute("SELECT preview_url FROM projects WHERE title='Aurora Habit Studio'").fetchone()
         con.close()
         assert len(stored) == 8, [row['title'] for row in stored]
+        assert refused_row is None, 'the refused submission still reached the database'
+        assert aurora and aurora['preview_url'] == preview_target, \
+            f'the stored row kept {aurora!r} instead of the address the form was given'
+        print('persisted preview_url on the edited project:', aurora['preview_url'])
         for index, category in enumerate(sweep):
             row = stored[index]
             assert row['category'] == category, (row['title'], row['category'])
