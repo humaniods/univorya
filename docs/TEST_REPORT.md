@@ -5,7 +5,7 @@ re-run against the working build on that date, then pushed; the same build passe
 
 | Test suite | Command | Result |
 |---|---|---|
-| API and authorization | `pytest --cov=app -q` | **53 passed** |
+| API and authorization | `pytest --cov=app -q` | **58 passed** |
 | JS syntax | `node --check static/app.js` | **Passed** |
 | Browser UI smoke | `python tests/browser_flow.py` | **Passed** |
 | Real HTTP integration | `python scripts/smoke_http.py` against local Uvicorn | **Passed** |
@@ -60,6 +60,11 @@ re-run against the working build on that date, then pushed; the same build passe
 - Reject cross-origin writes with mismatched Origin.
 - Source-level guards: the load-more append uses the rendered grid, no `@import` of remote fonts, `@keyframes`
   exist, and the router ends in a real not-found page instead of falling through to the explore grid.
+- **The local preview launcher cannot open a half-booted server:** the health poll returns only on a real 200,
+  gives up rather than hanging, a busy port is detected before anything tries to bind, an already-running
+  instance is reused with the browser pointed at it, and `--temp` redirects `UNIVORYA_DATA_DIR` away from `data/`
+  (`tests/test_preview_script.py`). Observed live: the log shows `GET /api/health` followed by the browser's own
+  `GET /`, `/styles.css`, `/app.js`, `/api/auth/me` and `/api/metadata`.
 
 ## Browser UI smoke
 
