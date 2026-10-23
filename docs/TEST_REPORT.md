@@ -1,7 +1,7 @@
 # Univorya — Local Test Results
 
-**Run date:** 23 October 2026 — the API suite, HTTP smoke, the Chromium flow and every code fix below were
-re-run against the working build on that date, then pushed; the same build passed both GitHub Actions jobs.
+**Run date:** 23 October 2026 — the API suite (87 cases), HTTP smoke, the Chromium flow and every code fix below
+were re-run against the working build on that date, then pushed; the same build passed both GitHub Actions jobs.
 
 | Test suite | Command | Result |
 |---|---|---|
@@ -9,7 +9,7 @@ re-run against the working build on that date, then pushed; the same build passe
 | JS syntax | `node --check static/app.js` | **Passed** |
 | Browser UI smoke | `python tests/browser_flow.py` | **Passed** |
 | Real HTTP integration | `python scripts/smoke_http.py` against local Uvicorn | **Passed** |
-| GitHub Actions CI | push to `main` → `.github/workflows/ci.yml` | **Passed — both jobs** ([run 39931824327](https://github.com/humaniods/univorya/actions/runs/39931824327)): `pytest --cov=app --cov-fail-under=85`, `compileall`, `node --check`, and `python tests/browser_flow.py` in a Playwright-installed Chromium |
+| GitHub Actions CI | push to `main` → `.github/workflows/ci.yml` | **Passed — both jobs** ([run 39942029240](https://github.com/humaniods/univorya/actions/runs/39942029240)): `pytest --cov=app --cov-fail-under=85`, `compileall`, `node --check`, and `python tests/browser_flow.py` in a Playwright-installed Chromium |
 
 ## API cases covered
 
@@ -78,6 +78,11 @@ re-run against the working build on that date, then pushed; the same build passe
   the stored value is loopback; it reports a missing database, an unknown slug, a project with no address, a
   server that is not listening and a missing Chrome binary as separate, actionable failures; `--print` resolves
   without touching a browser, and the launch it does perform passes `--app=<url>` plus its own `--user-data-dir`.
+  Observed live on this machine: against a throwaway `UNIVORYA_DATA_DIR` and a stub server on `127.0.0.1:8273`,
+  `--print` answered with the stored address, the real launch opened `/usr/bin/google-chrome --app=…`, the window
+  manager listed it as `"Aurora · local dev server"`, and the stub's own access log recorded the `GET / 200` that
+  window asked for. The same script against `data/univorya.sqlite3` (never written by a test) reported that the
+  database predates the column instead of launching anything.
 
 ## Browser UI smoke
 
@@ -165,7 +170,7 @@ slug's own 404 as a broken request.
 
 ## Not claimed
 
-GitHub CI has now run green on the pushed build (both jobs, run 39931824327). Still **not** claimed: a live
+GitHub CI has now run green on the pushed build (both jobs, run 39942029240). Still **not** claimed: a live
 production deployment, public availability, multi-browser matrix, full WCAG audit, load tests or penetration
 test.
 
