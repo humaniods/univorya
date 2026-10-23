@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+from PIL.TiffImagePlugin import IFDRational
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / 'static'
 
@@ -91,6 +92,32 @@ def test_tiny_images_are_rejected_instead_of_being_upscaled(c):
     assert response.status_code == 422
     assert '200 × 150' in response.json()['detail']
     assert list((c.data_dir / 'uploads').iterdir()) == [], 'rejected upload must leave no file behind'
+
+
+def test_a_re_encoded_image_loses_the_camera_and_location_metadata(c):
+    """Phone exports carry owner and GPS data; the gallery must not publish it."""
+    signup(c)
+    exif = Image.new('RGB', (900, 600)).getexif()
+    exif[271], exif[272], exif[305], exif[306] = 'SecretCameraModel', 'Owner Phone', 'SomePhone OS 9.9', '2026:10:22'
+    exif[282] = IFDRational(50, 1)
+    gps = exif.get_ifd(0x8825)
+    gps[1], gps[3] = 'N', 'E'
+    gps[2] = (IFDRational(30, 1), IFDRational(18, 1), IFDRational(0, 1))
+    gps[4] = (IFDRational(75, 1), IFDRational(52, 1), IFDRational(0, 1))
+    buf = io.BytesIO()
+    Image.new('RGB', (900, 600), (20, 190, 140)).save(buf, 'JPEG', exif=exif)
+    source = buf.getvalue()
+    assert b'SecretCameraModel' in source, 'the fixture stopped carrying the tag it is meant to test'
+
+    slug = c.post('/api/projects', data=fields(),
+                  files={'cover': ('phone-export.jpg', source, 'image/jpeg')}).json()['slug']
+    stored = c.get(c.get('/api/projects/' + slug).json()['project']['cover_image'])
+    assert stored.status_code == 200 and stored.headers['content-type'] == 'image/webp'
+    for marker in (b'SecretCameraModel', b'Owner Phone', b'SomePhone', b'2026:10:22'):
+        assert marker not in stored.content, f'{marker} survived the re-encode'
+    # Shrunk for the grid, never stretched beyond what the creator uploaded.
+    image = Image.open(io.BytesIO(stored.content))
+    assert image.size == (900, 600)
 
 
 def test_animated_gif_keeps_its_frames(c):

@@ -18,9 +18,9 @@
 |---|---|---|---|
 | U-01 | Register/login/logout | Email/username validation, password hashed, HttpOnly cookie sessions | Implemented; tested |
 | U-02 | Create a project/idea | Title/tagline/description/category/stage, optional repo/demo URL | Implemented; tested |
-| U-03 | Upload an image | PNG/JPG/WebP/GIF up to 5MB; decoded and stored as WebP; rejects invalid files | Implemented; tested |
+| U-03 | Upload an image | PNG/JPG/WebP/GIF up to 5MB each, 8 files and 25MB combined, at least 200×150; decoded, stripped of camera/GPS metadata, shrunk but never upscaled, stored as WebP; rejects invalid files | Implemented; tested |
 | U-04 | Public showcase page | Stable URL with title, creator, description, stack, links, cover | Implemented; tested |
-| U-05 | Discovery | Keyword search, category/stage filtering, ordering and pagination | Implemented; API tested |
+| U-05 | Discovery | Keyword search, category/stage filtering, ordering and pagination | Implemented; API and browser tested |
 | U-06 | Creator portfolio | Public list of projects and self-dashboard | Implemented; tested |
 | U-07 | Appreciation | Logged-in visitor toggles like once per project | Implemented; tested |
 | U-08 | Edit project | Only owner may edit; same slug preserved; optional cover replacement | Implemented; API/browser tested |
@@ -38,7 +38,8 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 - Validate values on server, not just browser; use parameterized SQL and escaped rendered user text.
 - Passwords are hashed with scrypt; bearer token stored only as hashed digest in SQLite, cookie HttpOnly/SameSite.
 - Restrict writable project operations to authenticated owner. Enforce website URL scheme checks.
-- Reject files that aren't decodeable allowed images; strip metadata and resize.
+- Reject files that aren't decodeable allowed images; strip metadata and resize. Verified: camera/model/software tags and GPS coordinates do not survive the WebP re-encode, and the animation pixel budget is enforced per upload, not per frame.
+- Keep every generated redirect target same-origin — a canonicalisation helper that emits `//host` is an open redirect.
 - Add basic browser hardening headers and reject mismatched Origin headers on write requests.
 - Display real/synthetic creator content distinctly: demo cards **never** imply real users.
 - SQLite and image directory **must** be persistent if deployed; create backup/restore routine.
@@ -62,4 +63,4 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 
 ## Release gate
 
-**Passed locally:** `pytest --cov=app` (51 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates), real HTTP smoke script when a server is running. **Not passed/verified:** GitHub-hosted CI run, live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.
+**Passed locally:** `pytest --cov=app` (52 API tests, 94% of `app/main.py`), Chromium browser smoke (signup → multi-image upload → publish → search → edit → clearing the gallery → not-found, malformed-URL and signed-out gates), real HTTP smoke script when a server is running. **Not passed/verified:** GitHub-hosted CI run, live deployment, production-domain TLS, managed storage, anti-abuse and full a11y/security audit.

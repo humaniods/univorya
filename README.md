@@ -48,7 +48,7 @@ Set `UNIVORYA_DATA_DIR=./data` to choose where SQLite and uploaded images are st
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=app --cov-fail-under=85 -q   # 51 API tests, 94% coverage
+pytest --cov=app --cov-fail-under=85 -q   # 52 API tests, 94% coverage
 node --check static/app.js       # JavaScript syntax
 python tests/browser_flow.py     # Chromium UI smoke; generates screenshots
 UNIVORYA_HEADED=1 python tests/browser_flow.py   # same run in a visible browser window
@@ -69,7 +69,7 @@ app/main.py                    Python FastAPI, session auth, persistence, REST e
 static/                        HTML, CSS, JS, logo
 scripts/smoke_http.py          Real network regression check
 .github/workflows/ci.yml       API + JS + Chromium pipeline
-tests/                         51 API checks, browser interaction smoke
+tests/                         52 API checks, browser interaction smoke
 docs/REQUIREMENTS.md           Product requirements and acceptance criteria
 docs/ARCHITECTURE.md           Architecture/data model/risk notes
 docs/TEST_REPORT.md            Observed tests and caveats

@@ -1,10 +1,11 @@
 # Univorya — Local Test Results
 
-**Run date:** 22 October 2026 (superseding the earlier same-day run)
+**Run date:** 23 October 2026 — the API suite, HTTP smoke and every code fix below were re-run against the
+committed build; the Chromium flow last ran against that same build on 22 October.
 
 | Test suite | Command | Result |
 |---|---|---|
-| API and authorization | `pytest --cov=app -q` | **51 passed** |
+| API and authorization | `pytest --cov=app -q` | **52 passed** |
 | JS syntax | `node --check static/app.js` | **Passed** |
 | Browser UI smoke | `python tests/browser_flow.py` | **Passed** |
 | Real HTTP integration | `python scripts/smoke_http.py` against local Uvicorn | **Passed** |
@@ -27,6 +28,8 @@
 - `keep_media` distinguishes *omitted* from *sent empty*: an empty list really does remove every screenshot,
   and only screenshots belonging to that project can be removed by it.
 - A picked file that arrives with zero bytes is rejected instead of being dropped in silence.
+- **A phone-style JPEG export loses its owner and location on the way in:** camera model, device/software and
+  capture-time tags are absent from the stored WebP bytes, and the image is shrunk but never upscaled.
 - Metadata advertises the same limits the client validates against (per-file MB, 25 MB combined, 8 screenshots, 200×150 minimum).
 - Tiny covers are rejected rather than upscaled, and a rejected batch leaves no orphan files on disk.
 - Animated GIF input keeps its frames and is served as animated WebP; PNG/JPEG/greyscale/RGBA/palette/GIF/WebP
