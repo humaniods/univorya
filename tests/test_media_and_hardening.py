@@ -88,7 +88,7 @@ def test_each_stored_upload_reports_the_row_behind_it(c):
         # The tile is only honest about an upload if it carries the timestamp of the row it came from.
         stored = datetime.fromisoformat(item['uploaded_at'])
         assert stored.tzinfo is not None and stored <= datetime.now(timezone.utc), item
-    source = (STATIC_DIR / 'app.js').read_text()
+    source = (STATIC_DIR / 'app.js').read_text(encoding='utf-8')
     assert 'formatDate(item.uploaded_at)' in source, 'the creator must see when their own file was stored'
 
 
@@ -347,10 +347,10 @@ def test_missing_assets_404_instead_of_answering_with_the_app_shell(c):
 
 def test_client_ships_the_fixes_the_audit_asked_for():
     root = __import__('pathlib').Path(__file__).resolve().parent.parent
-    source = (root / 'static' / 'app.js').read_text()
+    source = (root / 'static' / 'app.js').read_text(encoding='utf-8')
     assert "$('.project-grid'," not in source, 'load-more must not pass a selector string as the search root'
     assert "$('#catalog-results .project-grid')" in source
-    stylesheet = (root / 'static' / 'styles.css').read_text()
+    stylesheet = (root / 'static' / 'styles.css').read_text(encoding='utf-8')
     assert '@keyframes' in stylesheet, 'the motion layer must exist'
     assert 'prefers-reduced-motion' in stylesheet
     assert "@import url('https://" not in stylesheet, 'fonts must stay on the same origin'

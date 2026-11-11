@@ -226,11 +226,11 @@ def test_the_script_refuses_a_dead_server_and_a_public_address(tmp_path, monkeyp
 
 
 def test_the_client_only_shows_the_field_and_the_button_to_the_owner():
-    source = (STATIC_DIR / 'app.js').read_text()
+    source = (STATIC_DIR / 'app.js').read_text(encoding='utf-8')
     assert 'name="preview_url"' in source, 'the publish form must carry the address'
     assert 'p.is_owner&&p.preview_url' in source, 'the preview box is owner-only markup'
     assert 'preview_url:p.preview_url' in source, 'the edit page must prefill it'
     assert "action==='open-local-preview'" in source
     assert 'w.opener=null' in source, 'the opened window must not keep a handle on Univorya'
-    styles = (STATIC_DIR / 'styles.css').read_text()
+    styles = (STATIC_DIR / 'styles.css').read_text(encoding='utf-8')
     assert '.local-preview-box' in styles

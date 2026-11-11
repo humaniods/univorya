@@ -23,11 +23,21 @@ from urllib.parse import urlparse
 
 mimetypes.add_type("image/webp", ".webp")
 
+import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
+
+from .memory_store import (
+    DuplicateRecord,
+    MemoryDBError,
+    MemoryStore,
+    RecordNotFound,
+    VersionConflict,
+)
+from . import google_oauth, studio
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("UNIVORYA_DATA_DIR", str(ROOT / "data")))
@@ -35,9 +45,49 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "univorya.sqlite3"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+studio.configure(DATA_DIR)
+
+# MemoryDB is the production store. SQLite stays the zero-setup development
+# fallback, and is what the existing test suite exercises unless it opts in.
+MEMORYDB_URL = os.environ.get("MEMORYDB_URL", "").strip()
+STORE_BACKEND = os.environ.get(
+    "UNIVORYA_STORE", "memorydb" if MEMORYDB_URL else "sqlite"
+).strip().lower()
+if STORE_BACKEND not in ("sqlite", "memorydb"):
+    raise RuntimeError("UNIVORYA_STORE must be 'sqlite' or 'memorydb'")
+MEMORY: MemoryStore | None = None
+if STORE_BACKEND == "memorydb":
+    if not MEMORYDB_URL:
+        raise RuntimeError("UNIVORYA_STORE=memorydb requires MEMORYDB_URL")
+    MEMORY = MemoryStore(MEMORYDB_URL)
 
 app = FastAPI(title="Univorya API", version="0.2.0", docs_url="/api/docs", redoc_url=None)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+
+@app.exception_handler(RecordNotFound)
+async def memory_not_found(request: Request, exc: RecordNotFound):
+    return JSONResponse(status_code=404, content={"detail": "Not found"})
+
+
+@app.exception_handler(DuplicateRecord)
+async def memory_duplicate(request: Request, exc: DuplicateRecord):
+    return JSONResponse(status_code=409, content={"detail": "That record already exists"})
+
+
+@app.exception_handler(VersionConflict)
+async def memory_conflict(request: Request, exc: VersionConflict):
+    return JSONResponse(status_code=409, content={"detail": "This item changed while you were editing. Reload and try again."})
+
+
+@app.exception_handler(MemoryDBError)
+async def memory_unavailable(request: Request, exc: MemoryDBError):
+    return JSONResponse(status_code=503, content={"detail": "The showcase database is temporarily unavailable"})
+
+
+@app.exception_handler(studio.StudioError)
+async def studio_error(request: Request, exc: studio.StudioError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 CATEGORIES = ["Web App", "Mobile App", "AI & ML", "Dev Tool", "Open Source", "Design", "Idea", "Other"]
 STAGES = ["Idea", "Building", "Beta", "Launched"]
@@ -170,6 +220,14 @@ def init_db():
         columns = {row["name"] for row in con.execute("PRAGMA table_info(projects)")}
         if "preview_url" not in columns:
             con.execute("ALTER TABLE projects ADD COLUMN preview_url TEXT NOT NULL DEFAULT ''")
+        user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)")}
+        if "google_sub" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+        if "auth_provider" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'password'")
+        # A Google subject may only point at one account, while password accounts keep NULL.
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub "
+                    "ON users(google_sub) WHERE google_sub IS NOT NULL")
 
 
 def hash_password(password: str) -> str:
@@ -195,6 +253,7 @@ ATTEMPT_WINDOW = 600              # seconds
 LOGIN_ACCOUNT_LIMIT = 10          # failed password checks against one account
 LOGIN_CLIENT_LIMIT = 30           # ...across accounts from one client, i.e. a leaked password list
 SIGNUP_CLIENT_LIMIT = 15          # signups from one client; each one costs a scrypt hash
+GOOGLE_START_LIMIT = 60           # sign-in redirects from one client; each one mints cookies
 _attempts: dict[tuple, deque] = defaultdict(deque)
 
 
@@ -233,19 +292,131 @@ def slugify(s: str) -> str:
     return (slug[:60].strip("-") or "project") + "-" + uuid.uuid4().hex[:6]
 
 
-def user_json(r: sqlite3.Row) -> dict:
+def get_field(row, key: str, default=None):
+    """Read an optional field from either a sqlite3.Row or a MemoryDB document."""
+    try:
+        value = row[key]
+    except (KeyError, IndexError):
+        return default
+    return default if value is None else value
+
+
+def user_json(r) -> dict:
     return {"id": r["id"], "name": r["name"], "username": r["username"],
-            "bio": r["bio"], "avatar_color": r["avatar_color"]}
+            "bio": get_field(r, "bio", ""), "avatar_color": get_field(r, "avatar_color", "#8b5cf6"),
+            "email": get_field(r, "email", ""),
+            "auth_provider": get_field(r, "auth_provider", "password")}
+
+
+def safe_next(raw: str) -> str:
+    """Keep only a same-origin absolute path; everything else lands on the dashboard.
+
+    A callback URL is attacker-controllable, so an open redirect here would turn
+    the sign-in page into a convincing phishing hop.
+    """
+    target = (raw or "").strip()
+    if (not target.startswith("/") or target.startswith("//") or "\\" in target
+            or any(ord(ch) < 32 for ch in target)):
+        return "/dashboard"
+    parsed = urlparse(target)
+    if parsed.scheme or parsed.netloc:
+        return "/dashboard"
+    return target[:300]
+
+
+def google_display_name(profile: dict) -> str:
+    name = clean_text(profile.get("name") or "")
+    if len(name) < 2:
+        local = profile["email"].split("@")[0].replace(".", " ").replace("_", " ")
+        name = clean_text(local).title() or "Univorya Maker"
+    return name[:70]
+
+
+def username_taken(username: str) -> bool:
+    if MEMORY:
+        return MEMORY.find_user_by_username(username) is not None
+    with db() as con:
+        return con.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone() is not None
+
+
+def allocate_google_username(profile: dict) -> str:
+    """Derive a readable handle from the Google profile, then settle collisions."""
+    base = re.sub(r"[^a-z0-9_]+", "", profile["email"].split("@")[0].lower())[:18]
+    if len(base) < 3:
+        base = re.sub(r"[^a-z0-9_]+", "", (profile.get("name") or "").lower())[:18]
+    if len(base) < 3:
+        base = "maker"
+    for suffix in [""] + [str(n) for n in range(2, 10)]:
+        candidate = (base + suffix)[:25]
+        if candidate not in RESERVED_USERNAMES and not username_taken(candidate):
+            return candidate
+    return f"{base[:16]}_{uuid.uuid4().hex[:6]}"
+
+
+def upsert_google_user(profile: dict):
+    """Find, link or create the account behind a verified Google identity.
+
+    Order matters: the stable Google subject wins, then a verified matching email
+    links a pre-existing password account, and only a genuinely new identity
+    creates a row. Google users get a random unusable password hash so the normal
+    password endpoint can never sign them in.
+    """
+    sub = profile["sub"]
+    email = profile["email"]
+    name = google_display_name(profile)
+    password_hash = hash_password(secrets.token_urlsafe(24))
+
+    if MEMORY:
+        user = MEMORY.find_user_by_google_sub(sub) or MEMORY.find_user_by_email(email)
+        if user:
+            return user if user.get("google_sub") else MEMORY.link_google_account(user, sub)
+        for _ in range(3):
+            try:
+                return MEMORY.create_user(
+                    name=name, username=allocate_google_username(profile), email=email,
+                    password_hash=password_hash, google_sub=sub, auth_provider="google",
+                )
+            except DuplicateRecord:
+                user = MEMORY.find_user_by_google_sub(sub) or MEMORY.find_user_by_email(email)
+                if user:
+                    return user
+        raise HTTPException(409, "Could not create an account from that Google profile")
+
+    with db() as con:
+        user = con.execute("SELECT * FROM users WHERE google_sub=? OR email=? LIMIT 1",
+                           (sub, email)).fetchone()
+        if user:
+            if not user["google_sub"]:
+                con.execute("UPDATE users SET google_sub=?, auth_provider='google' WHERE id=?",
+                            (sub, user["id"]))
+                user = con.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+            return user
+        for _ in range(3):
+            try:
+                cur = con.execute(
+                    """INSERT INTO users(name,username,email,password_hash,google_sub,auth_provider,created_at)
+                       VALUES(?,?,?,?,?,'google',?)""",
+                    (name, allocate_google_username(profile), email, password_hash, sub, utcnow()))
+                return con.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+            except sqlite3.IntegrityError:
+                user = con.execute("SELECT * FROM users WHERE google_sub=? OR email=? LIMIT 1",
+                                   (sub, email)).fetchone()
+                if user:
+                    return user
+    raise HTTPException(409, "Could not create an account from that Google profile")
 
 
 def current_user(request: Request):
     raw = request.cookies.get("univorya_session")
     if not raw:
         return None
+    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    if MEMORY:
+        return MEMORY.user_for_session(token_hash)
     with db() as con:
         return con.execute("""SELECT u.* FROM users u JOIN sessions s ON s.user_id=u.id
                               WHERE s.token_hash=? AND s.expires > ?""",
-                           (hashlib.sha256(raw.encode()).hexdigest(), int(time.time()))).fetchone()
+                           (token_hash, int(time.time()))).fetchone()
 
 
 async def keep_media_in_form(request: Request) -> bool:
@@ -264,13 +435,47 @@ def require_user(request: Request):
     return user
 
 
-def set_session(response: Response, user_id: int, request: Request):
+def owner_of_project(slug: str):
+    """Return the owner id for a showcase project, or None. Studio is a separate
+    SQLite store, so it still asks the primary store who owns the listing."""
+    if MEMORY:
+        row = MEMORY.get_project(slug)
+        return row["user_id"] if row else None
+    with db() as con:
+        row = con.execute("SELECT user_id FROM projects WHERE slug=?", (slug,)).fetchone()
+    return row["user_id"] if row else None
+
+
+def title_of_project(slug: str) -> str:
+    if MEMORY:
+        row = MEMORY.get_project(slug)
+        return row["title"] if row else ""
+    with db() as con:
+        row = con.execute("SELECT title FROM projects WHERE slug=?", (slug,)).fetchone()
+    return row["title"] if row else ""
+
+
+def require_project_owner(slug: str, request: Request):
+    user = require_user(request)
+    owner = owner_of_project(slug)
+    if owner is None:
+        raise HTTPException(404, "Project not found")
+    if str(owner) != str(user["id"]):
+        raise HTTPException(403, "Only the creator can open this project's Studio")
+    return user
+
+
+def set_session(response: Response, user_id, request: Request):
     token = secrets.token_urlsafe(40)
     lifetime = 60 * 60 * 24 * 30
-    with db() as con:
-        con.execute("DELETE FROM sessions WHERE expires <= ?", (int(time.time()),))
-        con.execute("INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)",
-                    (hashlib.sha256(token.encode()).hexdigest(), user_id, int(time.time()) + lifetime))
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if MEMORY:
+        MEMORY.create_session(token_hash, user_id, lifetime)
+    else:
+        with db() as con:
+            con.execute("DELETE FROM sessions WHERE expires <= ?", (int(time.time()),))
+            con.execute("INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)",
+                        (token_hash, user_id, int(time.time()) + lifetime))
     response.set_cookie("univorya_session", token, httponly=True, secure=request.url.scheme == "https",
                         samesite="lax", max_age=lifetime, path="/")
 
@@ -333,10 +538,11 @@ def validate_project(title: str, tagline: str, description: str, category: str, 
         raise HTTPException(422, "Choose a valid category and stage")
 
 
-def media_json(m: sqlite3.Row) -> dict:
+def media_json(m) -> dict:
+    uploaded_at = m.get("uploaded_at") or m.get("created_at", "") if isinstance(m, dict) else m["created_at"]
     return {"id": m["id"], "kind": m["kind"], "file": m["file"], "width": m["width"],
             "height": m["height"], "bytes": m["bytes"], "animated": bool(m["animated"]),
-            "uploaded_at": m["created_at"]}
+            "uploaded_at": uploaded_at}
 
 
 def media_for(con, project_ids) -> dict[int, list[dict]]:
@@ -352,16 +558,18 @@ def media_for(con, project_ids) -> dict[int, list[dict]]:
     return grouped
 
 
-def project_json(row: sqlite3.Row, viewer_id: int | None = None, media: list[dict] | None = None) -> dict:
+def project_json(row, viewer_id=None, media: list[dict] | None = None) -> dict:
     result = dict(row)
-    result["tags"] = json.loads(result["tags"])
-    result["tech"] = json.loads(result["tech"])
+    result["tags"] = json.loads(result["tags"]) if isinstance(result["tags"], str) else result["tags"]
+    result["tech"] = json.loads(result["tech"]) if isinstance(result["tech"], str) else result["tech"]
     result["likes"] = result.pop("like_count", 0)
     result["liked"] = bool(result.pop("viewer_liked", 0))
-    result["creator"] = {"name": result.pop("creator_name"), "username": result.pop("creator_username"),
-                         "avatar_color": result.pop("creator_color")}
+    result["creator"] = {"name": result.pop("creator_name", ""),
+                         "username": result.pop("creator_username", ""),
+                         "avatar_color": result.pop("creator_color", "#8b5cf6")}
     result["is_demo"] = bool(result["is_demo"])
     result["is_owner"] = bool(viewer_id and viewer_id == result["user_id"])
+    result.pop("version", None)
     if not result["is_owner"]:
         result.pop("preview_url", None)
     result["media"] = media if media is not None else []
@@ -399,10 +607,36 @@ async def security_headers(request: Request, call_next):
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.url.path.startswith("/preview/"):
+        # The signed preview route is meant to be framed by the Studio page. The app
+        # itself is still protected by X-Frame-Options: DENY below. When Studio and
+        # the preview proxy live on different hostnames, set UNIVORYA_APP_ORIGIN so
+        # the preview can name that one ancestor instead of blocking every cross-origin
+        # frame with SAMEORIGIN.
+        resp.headers["Cache-Control"] = "no-store"
+        if "content-security-policy" in resp.headers:
+            del resp.headers["content-security-policy"]
+        app_origin = os.environ.get("UNIVORYA_APP_ORIGIN", "").strip().rstrip("/")
+        parsed_app = urlparse(app_origin)
+        if parsed_app.scheme in ("http", "https") and parsed_app.netloc:
+            resp.headers["Content-Security-Policy"] = (
+                f"frame-ancestors 'self' {parsed_app.scheme}://{parsed_app.netloc}")
+        else:
+            resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+        return resp
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # Local Studio previews run on loopback ports. A deployed install should set
+    # UNIVORYA_PREVIEW_ORIGIN so only that origin is frameable.
+    frame_src = ["'self'", "http://127.0.0.1:*", "http://localhost:*"]
+    preview_origin = os.environ.get("UNIVORYA_PREVIEW_ORIGIN", "").strip().rstrip("/")
+    if preview_origin:
+        parsed = urlparse(preview_origin)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            frame_src.append(f"{parsed.scheme}://{parsed.netloc}")
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "frame-src " + " ".join(frame_src) + "; "
         "form-action 'self'; connect-src 'self'; script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'"
     )
@@ -436,14 +670,24 @@ def register(payload: Register, response: Response, request: Request):
     validate_password(payload.password)
     # Anything that reaches hashing costs real CPU, whether or not the row is then accepted.
     record_attempt("signup", request)
-    with db() as con:
+    password_hash = hash_password(payload.password)
+    if MEMORY:
         try:
-            cur = con.execute("INSERT INTO users(name,username,email,password_hash,created_at) VALUES(?,?,?,?,?)",
-                              (name, username, email, hash_password(payload.password), utcnow()))
-            user_id = cur.lastrowid
-            user = con.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-        except sqlite3.IntegrityError:
+            user = MEMORY.create_user(
+                name=name, username=username, email=email, password_hash=password_hash
+            )
+        except DuplicateRecord:
             raise HTTPException(409, "Email or username is already registered")
+        user_id = user["id"]
+    else:
+        with db() as con:
+            try:
+                cur = con.execute("INSERT INTO users(name,username,email,password_hash,created_at) VALUES(?,?,?,?,?)",
+                                  (name, username, email, password_hash, utcnow()))
+                user_id = cur.lastrowid
+                user = con.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            except sqlite3.IntegrityError:
+                raise HTTPException(409, "Email or username is already registered")
     set_session(response, user_id, request)
     return {"user": user_json(user)}
 
@@ -451,14 +695,18 @@ def register(payload: Register, response: Response, request: Request):
 @app.post("/api/auth/login")
 def login(payload: Login, response: Response, request: Request):
     throttle_login(request, payload.email)
-    with db() as con:
-        user = con.execute("SELECT * FROM users WHERE email=? OR username=?",
-                           (payload.email.strip().lower(), payload.email.strip().lower())).fetchone()
+    if MEMORY:
+        user = MEMORY.find_user_by_identifier(payload.email)
+    else:
+        with db() as con:
+            user = con.execute("SELECT * FROM users WHERE email=? OR username=?",
+                               (payload.email.strip().lower(), payload.email.strip().lower())).fetchone()
     # Hashing a throwaway digest for unknown accounts keeps the response time from naming valid ones.
     digest = user["password_hash"] if user else DUMMY_HASH
     if not verify_password(payload.password, digest):
         record_attempt("login", request, payload.email)
-        raise HTTPException(401, "Incorrect email/username or password")
+        raise HTTPException(401, "Incorrect email/username or password. "
+                                 "If you signed up with Google, use Continue with Google.")
     set_session(response, user["id"], request)
     return {"user": user_json(user)}
 
@@ -467,8 +715,12 @@ def login(payload: Login, response: Response, request: Request):
 def logout(request: Request, response: Response):
     raw = request.cookies.get("univorya_session")
     if raw:
-        with db() as con:
-            con.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(raw.encode()).hexdigest(),))
+        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        if MEMORY:
+            MEMORY.delete_session(token_hash)
+        else:
+            with db() as con:
+                con.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
     response.delete_cookie("univorya_session", path="/")
     return {"ok": True}
 
@@ -479,14 +731,86 @@ def me(request: Request):
     return {"user": user_json(user) if user else None}
 
 
+def clear_oauth_cookies(response: Response):
+    for name in ("univorya_oauth_state", "univorya_oauth_verifier", "univorya_oauth_next"):
+        response.delete_cookie(name, path="/auth/google")
+
+
+def google_failure(reason: str) -> RedirectResponse:
+    response = RedirectResponse(f"/login?google_error={reason}", status_code=302)
+    clear_oauth_cookies(response)
+    return response
+
+
+@app.get("/auth/google/start")
+def google_start(request: Request):
+    """Begin the authorization-code flow with state and PKCE in HttpOnly cookies."""
+    reject_if_spent(attempt_key("google-start", request, ""), GOOGLE_START_LIMIT)
+    cfg = google_oauth.config(str(request.base_url).rstrip("/") + "/auth/google/callback")
+    if not cfg:
+        raise HTTPException(503, "Google sign-in is not configured")
+    record_attempt("google-start", request)
+    state = secrets.token_urlsafe(32)
+    verifier, challenge = google_oauth.new_pkce()
+    response = RedirectResponse(google_oauth.authorization_url(cfg, state, challenge), status_code=302)
+    secure = request.url.scheme == "https"
+    for name, value in (
+        ("univorya_oauth_state", state),
+        ("univorya_oauth_verifier", verifier),
+        ("univorya_oauth_next", safe_next(request.query_params.get("next", ""))),
+    ):
+        response.set_cookie(name, value, max_age=600, httponly=True, secure=secure,
+                            samesite="lax", path="/auth/google")
+    return response
+
+
+@app.get("/auth/google/callback")
+def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    """Verify the callback, then sign in, link or create the account behind it."""
+    cfg = google_oauth.config(str(request.base_url).rstrip("/") + "/auth/google/callback")
+    if not cfg:
+        raise HTTPException(503, "Google sign-in is not configured")
+    expected = request.cookies.get("univorya_oauth_state", "")
+    verifier = request.cookies.get("univorya_oauth_verifier", "")
+    if (not state or not expected or not verifier
+            or not secrets.compare_digest(state.encode("utf-8", "ignore"), expected.encode("utf-8"))):
+        return google_failure("state")
+    if error:
+        return google_failure("denied" if error == "access_denied" else "provider")
+    if not code:
+        return google_failure("missing_code")
+    try:
+        access_token = google_oauth.exchange_code(cfg, code, verifier)
+        profile = google_oauth.fetch_profile(cfg, access_token)
+        user = upsert_google_user(profile)
+    except google_oauth.GoogleOAuthError:
+        return google_failure("exchange")
+    except HTTPException:
+        return google_failure("account")
+    target = safe_next(request.cookies.get("univorya_oauth_next", ""))
+    response = RedirectResponse(target, status_code=302)
+    set_session(response, user["id"], request)
+    clear_oauth_cookies(response)
+    return response
+
+
 @app.get("/api/metadata")
 def metadata():
-    with db() as con:
-        makers = con.execute("SELECT COUNT(*) FROM users WHERE id NOT IN (SELECT user_id FROM projects WHERE is_demo=1)").fetchone()[0]
-        projects = con.execute("SELECT COUNT(*) FROM projects WHERE is_demo=0").fetchone()[0]
+    if MEMORY:
+        counts = MEMORY.community_counts()
+        makers, projects = counts["makers"], counts["projects"]
+    else:
+        with db() as con:
+            makers = con.execute("SELECT COUNT(*) FROM users WHERE id NOT IN (SELECT user_id FROM projects WHERE is_demo=1)").fetchone()[0]
+            projects = con.execute("SELECT COUNT(*) FROM projects WHERE is_demo=0").fetchone()[0]
     return {"categories": CATEGORIES, "stages": STAGES, "cover_styles": list(COVER_STYLES),
+            "google": {"enabled": google_oauth.configured()},
             "limits": {"max_file_mb": MAX_FILE_BYTES // (1024 * 1024), "max_total_mb": MAX_TOTAL_UPLOAD_BYTES // (1024 * 1024),
                        "max_media": MAX_MEDIA_PER_PROJECT, "min_width": MIN_IMAGE_WIDTH, "min_height": MIN_IMAGE_HEIGHT},
+            "studio": {"enabled": os.environ.get("UNIVORYA_STUDIO", "1") != "0",
+                       "runner": "local",
+                       "preview_origin": os.environ.get("UNIVORYA_PREVIEW_ORIGIN", "").strip(),
+                       "providers": studio.provider_catalog(), "templates": studio.TEMPLATES},
             "community": {"makers": makers, "projects": projects}}
 
 
@@ -496,6 +820,21 @@ def list_projects(request: Request, q: str = "", category: str = "All", stage: s
     if not 1 <= limit <= 60 or page < 1:
         raise HTTPException(422, "Invalid pagination")
     viewer = current_user(request)
+    if category != "All" and category not in CATEGORIES:
+        raise HTTPException(422, "Invalid category")
+    if stage != "All" and stage not in STAGES:
+        raise HTTPException(422, "Invalid stage")
+    if sort not in ("trending", "newest", "popular"):
+        raise HTTPException(422, "Invalid sort")
+    if MEMORY:
+        rows, total = MEMORY.list_projects(
+            q=q, category=category, stage=stage, creator=creator, sort=sort,
+            limit=limit, page=page, viewer_id=viewer["id"] if viewer else None,
+        )
+        return {"projects": [project_json(row, viewer["id"] if viewer else None, row.get("media", []))
+                             for row in rows],
+                "pagination": {"page": page, "limit": limit, "total": total,
+                               "pages": (total + limit - 1) // limit}}
     clauses, params = [], []
     if q.strip():
         term = "%" + q.strip()[:100].replace("%", "\\%").replace("_", "\\_") + "%"
@@ -529,6 +868,11 @@ def list_projects(request: Request, q: str = "", category: str = "All", stage: s
 @app.get("/api/projects/{slug}")
 def project_detail(slug: str, request: Request):
     viewer = current_user(request)
+    if MEMORY:
+        row = MEMORY.get_project(slug, viewer["id"] if viewer else None, increment_views=True)
+        if not row:
+            raise HTTPException(404, "Project not found")
+        return {"project": project_json(row, viewer["id"] if viewer else None, row.get("media", []))}
     with db() as con:
         row = con.execute(PROJECT_SQL + " WHERE p.slug=?", (viewer["id"] if viewer else -1, slug)).fetchone()
         if not row:
@@ -543,6 +887,11 @@ def project_detail(slug: str, request: Request):
 @app.get("/api/makers/{username}")
 def maker_profile(username: str, request: Request):
     """A real profile or a real 404 — /makers/anything must not invent a person."""
+    if MEMORY:
+        maker = MEMORY.maker_stats(username)
+        if not maker:
+            raise HTTPException(404, "No creator with that username")
+        return {"maker": maker}
     with db() as con:
         user = con.execute("SELECT * FROM users WHERE username=?", (username.strip().lower(),)).fetchone()
         if not user:
@@ -638,6 +987,72 @@ def read_uploads(cover: UploadFile | None, screenshots) -> list[tuple[str, bytes
     return blobs
 
 
+def update_project_in_memory(slug: str, user, blobs, keep_values, fields: dict):
+    """Apply an owner edit to one MemoryDB project, files first and rows after.
+
+    The project document carries its media metadata, so a single versioned PATCH
+    replaces the gallery as well as the text.  Files are written before the PATCH and
+    removed again if it fails, which keeps the disk and the document in step.
+    """
+    row = MEMORY.get_project(slug)
+    if not row:
+        raise HTTPException(404, "Project not found")
+    if row["user_id"] != user["id"] or row.get("is_demo"):
+        raise HTTPException(403, "Only the creator can edit this project")
+
+    has_new_cover = any(kind == "cover" for kind, _ in blobs)
+    kept, stale = [], []
+    for item in row.get("media") or []:
+        drop = (item["kind"] == "cover" and has_new_cover) or (
+            item["kind"] == "screenshot" and keep_values is not None
+            and str(item["id"]) not in keep_values
+        )
+        if drop:
+            stale.append(item["file"])
+        else:
+            kept.append(dict(item))
+
+    written = []
+    cover_image = row.get("cover_image", "")
+    shot_position = sum(1 for item in kept if item["kind"] == "screenshot")
+    try:
+        for kind, raw in blobs:
+            meta = save_image(raw)
+            item = {
+                "id": uuid.uuid4().hex,
+                "kind": kind,
+                "file": meta["file"],
+                "width": meta["width"],
+                "height": meta["height"],
+                "bytes": meta["bytes"],
+                "animated": bool(meta["animated"]),
+                "position": 0 if kind == "cover" else shot_position,
+                "uploaded_at": utcnow(),
+            }
+            if kind == "screenshot":
+                shot_position += 1
+            kept.append(item)
+            written.append(meta["file"])
+            if kind == "cover":
+                cover_image = meta["file"]
+        position = 0
+        for item in kept:
+            if item["kind"] == "screenshot":
+                item["position"] = position
+                position += 1
+            else:
+                item["position"] = 0
+        fields = {**fields, "cover_image": cover_image}
+        MEMORY.update_project(row, fields, kept)
+    except Exception:
+        for file in written:
+            remove_file(file)
+        raise
+    for file in stale:
+        remove_file(file)
+    return {"slug": slug, "url": f"/p/{slug}"}
+
+
 @app.post("/api/projects", status_code=201)
 def create_project(user: sqlite3.Row = Depends(require_user),
                    title: str = Form(...), tagline: str = Form(...),
@@ -660,6 +1075,43 @@ def create_project(user: sqlite3.Row = Depends(require_user),
     now = utcnow()
     slug = slugify(title)
     written: list[str] = []
+    if MEMORY:
+        media, cover_image, shot_position = [], "", 0
+        try:
+            for kind, raw in blobs:
+                meta = save_image(raw)
+                item = {
+                    "id": uuid.uuid4().hex,
+                    "kind": kind,
+                    "file": meta["file"],
+                    "width": meta["width"],
+                    "height": meta["height"],
+                    "bytes": meta["bytes"],
+                    "animated": bool(meta["animated"]),
+                    "position": 0 if kind == "cover" else shot_position,
+                    "uploaded_at": now,
+                }
+                if kind == "screenshot":
+                    shot_position += 1
+                media.append(item)
+                written.append(meta["file"])
+                if kind == "cover":
+                    cover_image = meta["file"]
+            MEMORY.create_project({
+                "slug": slug, "user_id": user["id"], "title": title, "tagline": tagline,
+                "description": description, "category": category, "stage": stage,
+                "tags": arr(tags), "tech": arr(tech), "repo_url": repo_url,
+                "demo_url": demo_url, "website_url": website_url,
+                "preview_url": preview_url, "license": license,
+                "cover_image": cover_image, "cover_style": cover_style,
+                "creator_name": user["name"], "creator_username": user["username"],
+                "creator_color": user["avatar_color"],
+            }, media)
+        except Exception:
+            for file in written:
+                remove_file(file)
+            raise
+        return {"slug": slug, "url": f"/p/{slug}"}
     try:
         with db() as con:
             project_id = con.execute("""INSERT INTO projects(slug,user_id,title,tagline,description,category,stage,
@@ -708,8 +1160,15 @@ def update_project(slug: str, user: sqlite3.Row = Depends(require_user),
     if cover_style not in COVER_STYLES:
         raise HTTPException(422, "Invalid cover style")
     blobs = read_uploads(cover, screenshots)
-    keep_ids = None if not keep_media_sent else {
-        int(x) for x in (keep_media or "").split(",") if x.strip().isdigit()}
+    keep_values = None if not keep_media_sent else {
+        value.strip() for value in (keep_media or "").split(",") if value.strip()}
+    if MEMORY:
+        return update_project_in_memory(slug, user, blobs, keep_values, {
+            "title": title, "tagline": tagline, "description": description,
+            "category": category, "stage": stage, "tags": arr(tags), "tech": arr(tech),
+            "repo_url": repo_url, "demo_url": demo_url, "website_url": website_url,
+            "preview_url": preview_url, "license": license, "cover_style": cover_style,
+        })
     written: list[str] = []
     stale: list[str] = []
     try:
@@ -725,7 +1184,8 @@ def update_project(slug: str, user: sqlite3.Row = Depends(require_user),
                                  (row["id"],)).fetchall()
             for item in media:
                 drop = (item["kind"] == "cover" and any(kind == "cover" for kind, _ in blobs)) or \
-                        (item["kind"] == "screenshot" and keep_ids is not None and item["id"] not in keep_ids)
+                        (item["kind"] == "screenshot" and keep_values is not None
+                         and str(item["id"]) not in keep_values)
                 if drop:
                     stale.append(item["file"])
                     con.execute("DELETE FROM project_media WHERE id=?", (item["id"],))
@@ -757,6 +1217,19 @@ def update_project(slug: str, user: sqlite3.Row = Depends(require_user),
 @app.delete("/api/projects/{slug}")
 def delete_project(slug: str, request: Request):
     user = require_user(request)
+    if MEMORY:
+        row = MEMORY.get_project(slug)
+        if not row:
+            raise HTTPException(404, "Project not found")
+        if row["user_id"] != user["id"]:
+            raise HTTPException(403, "Only the creator can delete this project")
+        files = [item["file"] for item in row.get("media") or []]
+        MEMORY.delete_project(row)
+        if row.get("cover_image") and row["cover_image"] not in files:
+            files.append(row["cover_image"])
+        for file in files:
+            remove_file(file)
+        return {"ok": True}
     with db() as con:
         row = con.execute("SELECT * FROM projects WHERE slug=?", (slug,)).fetchone()
         if not row:
@@ -776,6 +1249,12 @@ def delete_project(slug: str, request: Request):
 @app.post("/api/projects/{slug}/like")
 def like_project(slug: str, request: Request):
     user = require_user(request)
+    if MEMORY:
+        try:
+            liked, count = MEMORY.toggle_like(slug, user["id"])
+        except RecordNotFound:
+            raise HTTPException(404, "Project not found")
+        return {"liked": liked, "likes": count}
     with db() as con:
         row = con.execute("SELECT id FROM projects WHERE slug=?", (slug,)).fetchone()
         if not row:
@@ -791,7 +1270,296 @@ def like_project(slug: str, request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "univorya"}
+    if MEMORY:
+        try:
+            MEMORY.health()
+        except MemoryDBError:
+            return JSONResponse(status_code=503,
+                                content={"status": "degraded", "service": "univorya", "store": "memorydb"})
+        return {"status": "ok", "service": "univorya", "store": "memorydb"}
+    return {"status": "ok", "service": "univorya", "store": "sqlite"}
+
+
+# ------------------------------------------------------------------ Studio API
+# Studio is intentionally small: the owner creates a workspace for one of their
+# projects, connects their own model key, chats with the coding agent, and previews
+# the running app in a split pane. All state lives in DATA_DIR/studio/studio.sqlite3.
+
+class StudioWorkspaceBody(BaseModel):
+    template: str = "static"
+
+
+class StudioChatBody(BaseModel):
+    message: str = Field(min_length=1, max_length=studio.MAX_MESSAGE_CHARS)
+
+
+class StudioCredentialBody(BaseModel):
+    provider: str
+    model: str
+    api_key: str = ""
+    base_url: str = ""
+
+
+class StudioPreviewBody(BaseModel):
+    command: str = ""
+
+
+class StudioGitCredentialBody(BaseModel):
+    token: str
+    username: str = "x-access-token"
+
+
+class StudioGitCloneBody(BaseModel):
+    url: str
+    branch: str = ""
+    replace: bool = False
+
+
+class StudioGitCommitBody(BaseModel):
+    message: str = Field(min_length=1, max_length=500)
+    paths: list[str] = []
+
+
+def studio_workspace_json(row: dict | None) -> dict | None:
+    if not row:
+        return None
+    return {"slug": row["slug"], "template": row["template"], "status": row["status"],
+            "port": int(row.get("port") or 0), "command": row.get("command") or "",
+            "git_remote": row.get("git_remote") or "", "git_branch": row.get("git_branch") or "",
+            "created_at": row.get("created_at", ""), "updated_at": row.get("updated_at", "")}
+
+
+STOPPED_PREVIEW = {"status": "stopped", "running": False, "url": "", "port": 0,
+                   "command": "", "error": ""}
+
+
+@app.get("/api/studio/projects/{slug}")
+def studio_project(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    row = studio.get_workspace(slug)
+    if row:
+        files = studio.workspace_files(slug, user["id"])
+        messages = studio.messages_for(slug, user["id"])
+        preview = studio.preview_status(slug, user["id"])
+    else:
+        files, messages, preview = [], [], dict(STOPPED_PREVIEW)
+    return {"workspace": studio_workspace_json(row), "credential": studio.credential_public(user["id"]),
+            "files": files, "messages": messages, "preview": preview,
+            "git": studio.git_status(slug, user["id"]) if row else None,
+            "git_credential": studio.git_credential_public(user["id"]),
+            "git_available": studio.git_available(),
+            "project": {"slug": slug, "title": title_of_project(slug)}}
+
+
+@app.put("/api/studio/projects/{slug}/workspace")
+def studio_create_workspace(slug: str, payload: StudioWorkspaceBody, request: Request):
+    user = require_project_owner(slug, request)
+    row = studio.ensure_workspace(slug, user["id"], payload.template)
+    return {"workspace": studio_workspace_json(row), "files": studio.workspace_files(slug, user["id"]),
+            "preview": studio.preview_status(slug, user["id"]),
+            "git": studio.git_status(slug, user["id"])}
+
+
+@app.get("/api/studio/projects/{slug}/files")
+def studio_files(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    return {"files": studio.workspace_files(slug, user["id"]),
+            "tree": studio.project_tree(slug, user["id"])}
+
+
+@app.get("/api/studio/projects/{slug}/messages")
+def studio_messages(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    return {"messages": studio.messages_for(slug, user["id"])}
+
+
+@app.post("/api/studio/projects/{slug}/chat")
+def studio_chat(slug: str, payload: StudioChatBody, request: Request):
+    user = require_project_owner(slug, request)
+    result = studio.chat(slug, user["id"], payload.message)
+    result["files"] = studio.workspace_files(slug, user["id"])
+    result["git"] = studio.git_status(slug, user["id"])
+    return result
+
+
+@app.get("/api/studio/credential")
+def studio_credential(request: Request):
+    user = require_user(request)
+    return {"credential": studio.credential_public(user["id"])}
+
+
+@app.put("/api/studio/credential")
+def studio_save_credential(payload: StudioCredentialBody, request: Request):
+    user = require_user(request)
+    credential = studio.save_credential(user["id"], payload.provider, payload.model,
+                                        payload.api_key, payload.base_url)
+    return {"credential": credential}
+
+
+@app.delete("/api/studio/credential")
+def studio_delete_credential(request: Request):
+    user = require_user(request)
+    studio.delete_credential(user["id"])
+    return {"credential": None}
+
+
+@app.get("/api/studio/git/credential")
+def studio_git_credential(request: Request):
+    user = require_user(request)
+    return {"credential": studio.git_credential_public(user["id"])}
+
+
+@app.put("/api/studio/git/credential")
+def studio_save_git_credential(payload: StudioGitCredentialBody, request: Request):
+    user = require_user(request)
+    return {"credential": studio.save_git_credential(user["id"], payload.token, payload.username)}
+
+
+@app.delete("/api/studio/git/credential")
+def studio_delete_git_credential(request: Request):
+    user = require_user(request)
+    studio.delete_git_credential(user["id"])
+    return {"credential": None}
+
+
+@app.get("/api/studio/projects/{slug}/git")
+def studio_git(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    return {"git": studio.git_status(slug, user["id"]),
+            "credential": studio.git_credential_public(user["id"]),
+            "available": studio.git_available()}
+
+
+@app.post("/api/studio/projects/{slug}/git/clone")
+def studio_git_clone(slug: str, payload: StudioGitCloneBody, request: Request):
+    user = require_project_owner(slug, request)
+    result = studio.git_clone(slug, user["id"], payload.url, payload.branch, payload.replace)
+    return {"git": result, "files": studio.workspace_files(slug, user["id"]),
+            "preview": studio.preview_status(slug, user["id"])}
+
+
+@app.get("/api/studio/projects/{slug}/git/diff")
+def studio_git_diff(slug: str, request: Request, staged: bool = False):
+    user = require_project_owner(slug, request)
+    return {"diff": studio.git_diff(slug, user["id"], staged)}
+
+
+@app.post("/api/studio/projects/{slug}/git/commit")
+def studio_git_commit(slug: str, payload: StudioGitCommitBody, request: Request):
+    user = require_project_owner(slug, request)
+    return {"git": studio.git_commit(slug, user["id"], payload.message, payload.paths)}
+
+
+@app.post("/api/studio/projects/{slug}/git/push")
+def studio_git_push(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    return {"git": studio.git_push(slug, user["id"])}
+
+
+@app.post("/api/studio/projects/{slug}/git/pull")
+def studio_git_pull(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    return {"git": studio.git_pull(slug, user["id"]),
+            "files": studio.workspace_files(slug, user["id"])}
+
+
+@app.post("/api/studio/projects/{slug}/preview/start")
+def studio_start(slug: str, payload: StudioPreviewBody, request: Request):
+    user = require_project_owner(slug, request)
+    return {"preview": studio.start_preview(slug, user["id"], payload.command)}
+
+
+@app.post("/api/studio/projects/{slug}/preview/stop")
+def studio_stop(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    return {"preview": studio.stop_preview(slug, user["id"])}
+
+
+@app.get("/api/studio/projects/{slug}/preview")
+def studio_preview(slug: str, request: Request):
+    user = require_project_owner(slug, request)
+    return {"preview": studio.preview_status(slug, user["id"])}
+
+
+@app.get("/api/studio/projects/{slug}/preview/log")
+def studio_preview_log(slug: str, request: Request, lines: int = 80):
+    user = require_project_owner(slug, request)
+    return {"log": studio.preview_log(slug, user["id"], lines)}
+
+
+async def _proxy_preview(token: str, resource: str, request: Request):
+    verified = studio.verify_preview_token(token)
+    if not verified:
+        raise HTTPException(404, "Preview not found")
+    slug, user_id = verified
+    port = studio.preview_target(slug, user_id)
+    query = ("?" + request.url.query) if request.url.query else ""
+    target = f"http://127.0.0.1:{port}/{resource}{query}"
+    body = await request.body()
+    headers = {}
+    for name in ("accept", "accept-language", "content-type", "range",
+                 "if-none-match", "if-modified-since", "user-agent"):
+        value = request.headers.get(name)
+        if value:
+            headers[name] = value
+    client = httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10), follow_redirects=False)
+    try:
+        upstream = await client.send(client.build_request(request.method, target,
+                                                          headers=headers, content=body), stream=True)
+    except httpx.HTTPError:
+        await client.aclose()
+        raise HTTPException(502, "The preview app did not answer")
+
+    out_headers = {}
+    for name in ("content-type", "content-disposition", "content-language",
+                 "etag", "last-modified", "content-encoding"):
+        value = upstream.headers.get(name)
+        if value:
+            out_headers[name] = value
+    location = upstream.headers.get("location")
+    if location:
+        out_headers["location"] = studio.rewrite_location(location, token)
+    content_type = (upstream.headers.get("content-type") or "").lower()
+    # HTML and CSS are rewritten so root-absolute asset URLs keep working under
+    # /preview/<token>/. Everything else is relayed byte-for-byte.
+    if request.method != "HEAD" and ("text/html" in content_type or "text/css" in content_type):
+        raw = await upstream.aread()
+        await upstream.aclose()
+        await client.aclose()
+        charset = "utf-8"
+        match = re.search(r"charset=([\w.-]+)", content_type)
+        if match:
+            charset = match.group(1)
+        text = raw.decode(charset, errors="replace")
+        prefix = f"preview/{token}"
+        text = (studio.rewrite_preview_html(text, prefix) if "text/html" in content_type
+                else studio.rewrite_preview_css(text, prefix))
+        out_headers.pop("content-encoding", None)
+        return Response(content=text.encode("utf-8"), status_code=upstream.status_code,
+                        headers=out_headers)
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(relay(), status_code=upstream.status_code, headers=out_headers)
+
+
+@app.api_route("/preview/{token}/", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+               include_in_schema=False)
+async def preview_root(token: str, request: Request):
+    return await _proxy_preview(token, "", request)
+
+
+@app.api_route("/preview/{token}/{resource:path}",
+               methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+               include_in_schema=False)
+async def preview_resource(token: str, resource: str, request: Request):
+    return await _proxy_preview(token, resource, request)
 
 
 # Fictional demo data keep the gallery populated on first boot. Public API identifies these as demos.
@@ -809,6 +1577,9 @@ DEMO = [
 
 def seed_demo():
     if os.environ.get("UNIVORYA_SEED_DEMO", "1") == "0":
+        return
+    if MEMORY:
+        MEMORY.seed_demo(DEMO, slugify)
         return
     with db() as con:
         if con.execute("SELECT COUNT(*) FROM projects").fetchone()[0]:
@@ -829,7 +1600,10 @@ def seed_demo():
                          utcnow(), utcnow()))
 
 
-init_db()
+if MEMORY:
+    MEMORY.initialize()
+else:
+    init_db()
 seed_demo()
 
 STATIC = ROOT / "static"

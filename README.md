@@ -8,8 +8,15 @@ clones-only website, and it does not host the things it points at.
 
 ![Univorya home: the landing grid of project cards, seen at 1440px](docs/screens/home.png)
 
-**Scope:** Univorya stores project descriptions and images. It does not run uploaded code, host Git repos, serve
-model weights or distribute APK/IPA binaries. The brand is **provisional** until domain and trademark clearance.
+**Scope:** Univorya stores project descriptions and images. It never runs code uploaded by visitors, hosts Git
+repos, serves model weights or distributes APK/IPA binaries. **Studio** is the one exception to "no code": a project's
+owner can scaffold or clone a private workspace and let an AI agent (or their own installed Claude Code / Codex CLI)
+write files into it, which the owner previews beside the chat. The brand is **provisional** until domain and trademark clearance.
+
+**Production store:** Univorya runs on [MemoryDB](https://github.com/humaniods/MemoryDB) — users, sessions,
+projects, embedded media metadata and likes are MemoryDB documents, while image bytes stay on a local volume.
+SQLite remains the zero-setup development fallback. The included Compose stack starts both services, and
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers TLS, backups, restore and migration.
 
 ## What it looks like
 
@@ -81,7 +88,8 @@ Each flow is the path a person takes, what the server keeps, and the check that 
 - **Who:** anyone reading the code.
 - **Path:** `python scripts/preview.py` (starts the server and opens your browser), `docker compose up --build`,
   or Uvicorn with `UNIVORYA_DATA_DIR` pointing at a directory you own.
-- **Stored:** SQLite (`users`, `sessions`, `projects`, `likes`, `project_media`) plus `uploads/`, all under that one directory.
+- **Stored:** MemoryDB in production (`univorya_users`, `univorya_sessions`, `univorya_projects`,
+  `univorya_likes`; media metadata embedded) or SQLite for local development, plus `uploads/`.
 - **On screen:** the app at `127.0.0.1`, with `/api/docs` and `/api/health`.
 - **Proven by:** the HTTP smoke script run against a real server, and the test suite's throwaway instances.
 
@@ -96,6 +104,25 @@ Each flow is the path a person takes, what the server keeps, and the check that 
 - **Proven by:** the 29 checks in `tests/test_local_preview.py`, and the browser flow, which fills the field
   through the real form, watches the button open a second window on that exact address, then loads the same page
   signed out and asserts the address is missing from both the DOM and the API response.
+
+### UC-09 · Build the project beside a live preview, with your own model key or agent CLI
+- **Who:** the project's owner, on `/studio/<slug>`, signed in.
+- **Path:** **Open Studio** on the project page or the **Studio** chip on a dashboard card → pick a starter
+  (HTML/CSS/JS, Python/FastAPI, Node, clone a Git repository or empty) → save an OpenAI, Anthropic, OpenRouter,
+  custom OpenAI-compatible key, or select a local **Claude Code / Codex / Gemini / custom CLI** → describe the
+  change → **Start preview**.
+- **Stored:** a separate `DATA_DIR/studio/studio.sqlite3` sidecar holds the workspace, its port/PID, the chat
+  transcript and tool events. Model keys and Git tokens are encrypted with Fernet (`UNIVORYA_SECRET_KEY`, or a
+  generated `studio/secret.key` locally) and are never returned by the API — only a provider/model or username and
+  last-four hint.
+- **On screen:** a split workspace — conversation and tool chips on the left, the running app in an iframe on the
+  right — plus file, Git and model tabs, a preview log, and **Open** buttons that pop the live app into a normal
+  browser window. The agent can read/write files, run commands, clone, diff, commit, pull and push.
+- **Proven by:** `tests/test_studio.py` — owner-only access, scaffolding, encrypted-at-rest keys and Git tokens,
+  the key gate on chat, a scripted agent loop writing a real file, a local bare-repo round trip
+  (clone → commit → push → pull) through both the API and the agent tools, a fake agent CLI editing the workspace,
+  and a live server proxied through a signed `/preview/<token>/` URL with `SAMEORIGIN` framing and the page CSP
+  removed only for that route.
 
 ## Limitations we ran into — and closed
 
@@ -121,8 +148,9 @@ Honest list, not a to-do we pretend is done:
 
 - No live deployment: no public URL, production TLS, managed storage or Postgres, and no CDN in front of the
   uploads.
-- No email verification, password reset, captcha, abuse reporting, moderation or takedown workflow — do not open
-  signup to strangers before those exist.
+- Password signups have no email verification, and there is no password reset, captcha, abuse reporting, moderation
+  or takedown workflow — do not open signup to strangers before those exist. Google sign-in, when configured, only
+  accepts an address Google marks as verified.
 - The throttle map is in-memory and per process: multiple workers each hold their own counters, a restart clears
   them, and behind a reverse proxy every visitor can collapse into one bucket unless `--forwarded-allow-ips` and
   `X-Forwarded-For` rewriting are configured. See [docs/TEST_REPORT.md](docs/TEST_REPORT.md).
@@ -130,6 +158,12 @@ Honest list, not a to-do we pretend is done:
 - Local preview is the creator's own machine only. A page served over HTTP cannot start a program on the visitor's
   computer, so `Open on this machine` opens a window in the browser the creator is already using, and the tab-less
   Chrome window needs the local `scripts/showcase.py`. Visitors get the public links, never the loopback address.
+- Studio's local runner executes the agent's commands as the app service account, inside `DATA_DIR/studio`, with
+  timeouts — not inside a container. That is acceptable for a single-user self-hosted install, not for public
+  multi-tenant use. A per-workspace Docker runner and a dedicated preview origin are the production follow-ups.
+- Studio previews work best as static or simple server apps. The signed proxy rewrites HTML attributes and CSS
+  `url()` values, but an app that calls root-absolute URLs from inside JavaScript needs the direct loopback origin
+  (the default in local mode) or a dedicated preview domain.
 - The vendored OFL font subsets still need an attribution file, and there are no privacy/terms pages yet.
 - Phase 2 items — GitHub identity verification, teams, unlisted drafts, analytics, notifications — are
   unimplemented. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
@@ -137,7 +171,11 @@ Honest list, not a to-do we pretend is done:
 ## Features
 
 - Dark glassmorphism UI with responsive desktop/mobile layouts and a custom SVG wordmark.
-- Local creator accounts: register, login, logout, scrypt-hashed passwords, HttpOnly session cookies.
+- Creator accounts: register, login, logout, scrypt-hashed passwords, HttpOnly session cookies.
+- **Google Sign-In** with the authorization-code + PKCE flow, verified-email account linking and a password-only
+  fallback; the button stays hidden until OAuth credentials are configured.
+- **MemoryDB in production** — four collections with unique indexes, real record-level session expiry, embedded
+  media metadata and a denormalised like counter; SQLite stays for local development.
 - Publish **projects and ideas** with title, description, tags, 8 categories, 4 lifecycle stages, technologies,
   license and optional demo/GitHub/website links.
 - Public project detail pages, creator portfolios, discovery filters/search, sort and load-more pagination.
@@ -146,14 +184,39 @@ Honest list, not a to-do we pretend is done:
 - Logged-in likes, owner-controlled edit/update and delete, saved image replacement.
 - Owner-only **local preview**: store the loopback address your project runs on and open it straight from your own
   showcase page, or in a tab-less Chrome window with `scripts/showcase.py`.
-- 87 API tests and a Chromium interaction smoke that boots a real server, both green on GitHub Actions for every
-  push to `main`, plus a real-network smoke script, Docker, and reference screenshots generated by the tests
-  themselves.
+- **Studio**, an AI coding workspace inside a project: the owner brings their own OpenAI/Claude/OpenRouter key or
+  selects a locally installed agent CLI (Claude Code, Codex, Gemini, custom), chats with an agent that can read/write
+  files, run commands and manage Git, and watches the running app beside the chat in a split pane. Keys and Git
+  tokens are Fernet-encrypted per user; workspaces are private and owner-gated.
+- 142 API tests (including MemoryDB integration over a fake HTTP server, the Google OAuth handshake, Studio Git
+  round trips and agent CLI runs) and a Chromium interaction smoke that boots a real server, both green on GitHub
+  Actions for every push to `main`, plus a real-network smoke script, Docker, and reference screenshots generated by
+  the tests themselves.
 
-## Start with Docker
+## Start with Docker (production)
 
 ```bash
-docker compose up --build
+bash scripts/launch.sh        # creates .env and a random token on first run
+```
+
+Open http://localhost:8000. This starts **MemoryDB + Univorya**: database documents live in `memorydb-data`,
+uploaded images live in `univorya-data`, and online snapshots are written into `memorydb-data` then copied
+out by `scripts/backup.sh`.
+`scripts/launch.sh` generates a token on first run and waits for `/api/health`.
+
+For a real VPS, put Caddy in front for automatic HTTPS:
+
+```bash
+# set UNIVORYA_DOMAIN and UNIVORYA_BIND=127.0.0.1 in .env
+docker compose --profile https up -d --build
+```
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the security checklist, backup/restore, upgrades and migration.
+
+### SQLite-only development stack
+
+```bash
+docker compose -f docker-compose.sqlite.yml up --build
 ```
 
 Open http://localhost:8000. SQLite and uploads persist in the named volume `univorya-data`.
@@ -162,14 +225,100 @@ Open http://localhost:8000. SQLite and uploads persist in the named volume `univ
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Open http://127.0.0.1:8000. Swagger API docs at `/api/docs` and health endpoint `/api/health`.
 
-Set `UNIVORYA_DATA_DIR=./data` to choose where SQLite and uploaded images are stored. Use a durable disk/volume for persistence.
+SQLite is used by default. `UNIVORYA_DATA_DIR=./data` chooses where the database and uploaded images are stored.
+To use MemoryDB locally, start it (Docker is the supported way on Windows) and export:
+
+```bash
+export MEMORYDB_URL=memorydb://TOKEN@127.0.0.1:8080
+# or: export MEMORYDB_URL=http://127.0.0.1:8080 MEMORYDB_TOKEN=TOKEN
+export UNIVORYA_STORE=memorydb        # optional when MEMORYDB_URL is set
+```
+
+`UNIVORYA_STORE=sqlite` forces the local fallback even when `MEMORYDB_URL` is present.
+
+## Google Sign-In (optional)
+
+Create an **OAuth 2.0 Web application** client in Google Cloud Console, add
+`https://your-domain/auth/google/callback` (or `http://localhost:8000/auth/google/callback` for local work)
+as an authorized redirect URI, then set three variables and restart:
+
+```bash
+export GOOGLE_CLIENT_ID=000000000000-xxxxxxxx.apps.googleusercontent.com
+export GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxxxxxxxxxx
+export GOOGLE_REDIRECT_URI=http://localhost:8000/auth/google/callback   # must match the console exactly
+```
+
+The **Continue with Google** button appears on `/login` and `/join` only when both credentials are present;
+otherwise the app is password-only and `/auth/google/start` answers 503. The flow uses the authorization-code
+grant with **PKCE (S256)**, a signed-in-cookie `state` check and a 10-minute cookie lifetime, and only accepts
+profiles whose email Google marks as verified. A first Google sign-in with an email that already has a password
+account links the two (same user id); a brand-new identity gets a random unusable password hash, so the password
+form can never sign into a Google-only account.
+
+Offline development and demos use the same protocol against a local provider:
+
+```bash
+python -m uvicorn scripts.dev_mock_google:app --host 127.0.0.1 --port 8099
+# then set GOOGLE_AUTH_URL/GOOGLE_TOKEN_URL/GOOGLE_USERINFO_URL to that port, plus:
+#   demo account: aarav.google.demo@gmail.com / GoogleDemo-2026!
+```
+
+`scripts/dev_mock_google.py` is development-only and is not imported by the app or shipped in the production
+image. Never point the three URL overrides at a non-Google host in production.
+
+## Studio (bring your own model key)
+
+Open a project you own and press **Open Studio**, or follow the **Studio** chip on its dashboard card. Pick a
+starter, then save a key on the **Model** tab. Supported providers are OpenAI, Anthropic Claude, OpenRouter, any
+OpenAI-compatible endpoint (set a base URL, including a local one), and a **local agent CLI**. The CLI option covers
+Claude Code, Codex, Gemini and any command that accepts a `{prompt}` placeholder; the CLI must already be installed
+and signed in on the server account, and Studio runs it inside the workspace. An optional key pasted in the same
+tab is exported only to that child process.
+
+The **Git** tab clones a repository into the workspace, shows branch/remote/status/ahead-behind, recent commits and
+a diff, then commits and pushes with a per-user token. The same operations are agent tools, so the model can run
+`git_status`, `git_diff`, `git_clone`, `git_commit`, `git_pull` and `git_push` when you ask. Clone accepts `https://`
+URLs, loopback `http://` Git servers and absolute local paths; SSH URLs are rejected because Studio has no SSH agent.
+Git tokens live in the same encrypted sidecar and the API returns only the username and last four characters.
+
+```bash
+# Encrypts stored model keys and Git tokens at rest. Set once and keep it stable in production.
+export UNIVORYA_SECRET_KEY=$(openssl rand -hex 32)
+
+# Optional: point at a git binary that is not on PATH.
+# export UNIVORYA_GIT_BINARY=/usr/bin/git
+
+# Optional: cap one agent CLI run (seconds, default 300).
+# export UNIVORYA_STUDIO_CLI_TIMEOUT=300
+
+# Optional: serve signed /preview/<token>/ pages from a dedicated hostname.
+# If the preview host differs, also set the app's public origin:
+# export UNIVORYA_PREVIEW_ORIGIN=https://preview.example.com
+# export UNIVORYA_APP_ORIGIN=https://showcase.example.com
+
+# Hide Studio entirely.
+# export UNIVORYA_STUDIO=0
+```
+
+The key belongs to the signed-in user, is encrypted with Fernet before it reaches SQLite (or the configured data
+directory), and the API only ever returns the provider, model and last four characters. Studio keeps its own
+`DATA_DIR/studio/studio.sqlite3` sidecar, so enabling it does not change the main MemoryDB/SQLite schema. Workspaces
+are owner-only; another signed-in user gets a 403.
+
+Local mode starts the workspace on a loopback port and frames it directly (`http://127.0.0.1:<port>`); the **Open**
+button at the top and in the preview bar pops the same URL into a normal browser window. Production should set
+`UNIVORYA_PREVIEW_ORIGIN` (and `UNIVORYA_APP_ORIGIN` when the preview host differs) and put a container runner behind
+it. The built-in runner is **not a sandbox**: it runs commands and agent CLIs as the app account, so it is suitable
+for a single-user install, not for untrusted public signups. A per-workspace Docker runner is explicitly a follow-up,
+not a feature of this build. The Docker image installs `git`; install Node-based agent CLIs in a derived image if you
+want them inside the container. See `.env.example` for every Studio setting.
 
 ## See it in a real browser window
 
@@ -212,7 +361,7 @@ tests/browser_flow.py` drives the same window end to end if you would rather wat
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=app --cov-fail-under=85 -q   # 87 API tests, 94% of app/main.py
+pytest --cov=app --cov-fail-under=85 -q   # 142 tests, including MemoryDB, Google OAuth, Studio, Git and CLI agents
 node --check static/app.js                # JavaScript syntax
 python tests/browser_flow.py              # Chromium UI smoke; regenerates the screenshots above
 UNIVORYA_HEADED=1 python tests/browser_flow.py   # same run in a visible browser window
@@ -233,18 +382,24 @@ certification.
 
 ```text
 app/main.py                    FastAPI backend: session auth, uploads, persistence, REST
+app/studio.py                  Encrypted model keys/Git tokens, workspaces, providers, CLI agents, Git, preview proxy
+app/memory_store.py            MemoryDB persistence adapter (stdlib-only HTTP client)
 static/                        index.html, app.js, styles.css, logo, self-hosted fonts
 scripts/smoke_http.py          Real-network regression check
 scripts/preview.py             Start locally and open a real browser once /api/health answers
 scripts/showcase.py            Open a creator's own loopback preview in a Chrome app window
-tests/                         87 API checks + Chromium interaction smoke
+scripts/launch.sh              One-command Linux VPS launch
+scripts/backup.sh              Online MemoryDB backup + uploads archive
+scripts/migrate_sqlite_to_memorydb.py  One-way SQLite → MemoryDB migration
+tests/                         142 API checks + MemoryDB + Google OAuth + Studio/Git/CLI + Chromium smoke
 .github/workflows/ci.yml       API + JS + Chromium pipeline
-docs/                          Requirements, architecture, test report, screenshots
-Dockerfile / docker-compose.yml
+docs/                          Requirements, architecture, deployment, test report, screenshots
+Dockerfile / docker-compose.yml / docker-compose.sqlite.yml / Caddyfile
 ```
 
 ## Documentation
 
 - [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) — personas, acceptance criteria, non-goals, release gate.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — production launch, TLS, backups, restore, migration and security.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — data model, request flow, security notes and caveats.
 - [docs/TEST_REPORT.md](docs/TEST_REPORT.md) — what was run, what was observed, and what is explicitly not claimed.

@@ -37,7 +37,7 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
 ## Quality/security requirements
 
 - Validate values on server, not just browser; use parameterized SQL and escaped rendered user text.
-- Passwords are hashed with scrypt; bearer token stored only as hashed digest in SQLite, cookie HttpOnly/SameSite.
+- Passwords are hashed with scrypt; bearer token stored only as a hashed digest in the configured store (MemoryDB in production, SQLite in development), cookie HttpOnly/SameSite.
 - Restrict writable project operations to authenticated owner. Enforce website URL scheme checks.
 - Reject files that aren't decodeable allowed images; strip metadata and resize. Verified: camera/model/software tags and GPS coordinates do not survive the WebP re-encode, and the animation pixel budget is enforced per upload, not per frame.
 - Keep every generated redirect target same-origin — a canonicalisation helper that emits `//host` is an open redirect.
@@ -48,7 +48,7 @@ No native APK/IPA signing or distribution, no source-control/git hosting, no run
   is a loopback address, validated on both verbs, absent from every non-owner payload, and opened by the owner's own
   browser window or by `scripts/showcase.py`. The MVP non-goal "no running arbitrary uploaded code" still holds —
   Univorya stores a URL, never a build.
-- SQLite and image directory **must** be persistent if deployed; create backup/restore routine.
+- MemoryDB data (or the SQLite fallback) and the image directory **must** be persistent if deployed; create the backup/restore routine.
 - No external hosting or recurring paid resource provisioned without explicit deployment decision.
 
 ## Phase 2 (unimplemented; blockers before public scale)

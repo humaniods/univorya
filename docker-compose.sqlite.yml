@@ -1,0 +1,28 @@
+# Local-only SQLite stack, kept for development and for comparing behaviour.
+#
+#   docker compose -f docker-compose.sqlite.yml up --build
+#
+# Production uses the MemoryDB stack in docker-compose.yml.
+services:
+  univorya:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      UNIVORYA_DATA_DIR: /data
+      UNIVORYA_STORE: sqlite
+      UNIVORYA_SEED_DEMO: "1"
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      UNIVORYA_STUDIO: ${UNIVORYA_STUDIO:-1}
+      UNIVORYA_SECRET_KEY: ${UNIVORYA_SECRET_KEY:-}
+      UNIVORYA_GIT_BINARY: ${UNIVORYA_GIT_BINARY:-}
+      UNIVORYA_STUDIO_CLI_TIMEOUT: ${UNIVORYA_STUDIO_CLI_TIMEOUT:-300}
+      UNIVORYA_PREVIEW_ORIGIN: ${UNIVORYA_PREVIEW_ORIGIN:-}
+      UNIVORYA_APP_ORIGIN: ${UNIVORYA_APP_ORIGIN:-}
+    volumes:
+      - univorya-data:/data
+    restart: unless-stopped
+volumes:
+  univorya-data:

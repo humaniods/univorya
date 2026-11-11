@@ -1,13 +1,101 @@
+# Univorya production stack.
+#
+#   bash scripts/launch.sh      # creates .env, generates a token, starts the stack
+#   # or: docker compose up -d --build
+#
+# MemoryDB is the primary database; uploaded image bytes stay on the univorya-data
+# volume. The SQLite development stack lives in docker-compose.sqlite.yml.
 services:
+  memorydb:
+    image: ${MEMORYDB_IMAGE:-ghcr.io/humaniods/memorydb:latest}
+    # The image defaults are repeated here so online backups are explicit. Snapshot
+    # files share the writable /data volume, then scripts/backup.sh copies them out.
+    # -allow-insecure-network is safe behind this private Compose network; the
+    # published port is bound to loopback for operator access only.
+    command:
+      - memorydb
+      - -addr
+      - 0.0.0.0:8080
+      - -data
+      - /data/memory.wal
+      - -worker
+      - -allow-insecure-network
+      - -backup-dir
+      - /data
+    environment:
+      MEMORYDB_TOKEN: ${MEMORYDB_TOKEN:?Create .env from .env.example and set MEMORYDB_TOKEN}
+    ports:
+      - "127.0.0.1:${MEMORYDB_PORT:-8080}:8080"
+    volumes:
+      - memorydb-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header=\"Authorization: Bearer $$MEMORYDB_TOKEN\" http://127.0.0.1:8080/api/v1/health/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   univorya:
     build: .
     ports:
-      - "8000:8000"
+      # Set UNIVORYA_BIND=127.0.0.1 when Caddy terminates TLS in front of the app.
+      - "${UNIVORYA_BIND:-0.0.0.0}:${UNIVORYA_PORT:-8000}:8000"
     environment:
       UNIVORYA_DATA_DIR: /data
-      UNIVORYA_SEED_DEMO: "1"
+      UNIVORYA_STORE: memorydb
+      UNIVORYA_SEED_DEMO: ${UNIVORYA_SEED_DEMO:-1}
+      MEMORYDB_URL: http://memorydb:8080
+      MEMORYDB_TOKEN: ${MEMORYDB_TOKEN:?Create .env from .env.example and set MEMORYDB_TOKEN}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      # Optional Google Sign-In. Leave empty to show only email/password.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      # Studio: set UNIVORYA_STUDIO=0 to hide it. Keep UNIVORYA_SECRET_KEY stable
+      # and random so stored model keys survive restarts; otherwise a key file is
+      # generated inside /data/studio. The local runner is not a sandbox.
+      UNIVORYA_STUDIO: ${UNIVORYA_STUDIO:-1}
+      UNIVORYA_SECRET_KEY: ${UNIVORYA_SECRET_KEY:-}
+      UNIVORYA_GIT_BINARY: ${UNIVORYA_GIT_BINARY:-}
+      UNIVORYA_STUDIO_CLI_TIMEOUT: ${UNIVORYA_STUDIO_CLI_TIMEOUT:-300}
+      UNIVORYA_PREVIEW_ORIGIN: ${UNIVORYA_PREVIEW_ORIGIN:-}
+      UNIVORYA_APP_ORIGIN: ${UNIVORYA_APP_ORIGIN:-}
     volumes:
       - univorya-data:/data
+    depends_on:
+      memorydb:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+
+  # Optional automatic-HTTPS reverse proxy:
+  #   docker compose --profile https up -d --build
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      UNIVORYA_DOMAIN: ${UNIVORYA_DOMAIN:-example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      univorya:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
 volumes:
+  memorydb-data:
   univorya-data:
+  caddy-data:
+  caddy-config:

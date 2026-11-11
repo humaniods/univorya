@@ -5,6 +5,7 @@ const state = {
   loading:false, route:'/', pendingAfterAuth:'/dashboard', total:0,
   pickedScreens:[], pickedCover:null, existingMedia:[], keepDraft:false, currentProject:null, lightbox:-1
 };
+const studio={slug:null,data:null,tab:'chat',pending:false,poll:null,log:'',pane:'chat'};
 const $ = (s,root=document) => root.querySelector(s);
 const $$ = (s,root=document) => [...root.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -23,6 +24,8 @@ const icons = {
   heart:'<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
   external:'<path d="M14 4h6v6M10 14 20 4M20 13v7H4V4h7"/>',
   github:'<path d="M9 19c-4.4 1.4-4.4-2.5-6-3m12 6v-3.3a3 3 0 0 0-.8-2.4c3-.4 6.2-1.5 6.2-6.7A5.3 5.3 0 0 0 19 6a4.8 4.8 0 0 0-.1-3s-1.1-.3-3.3 1.5a11.2 11.2 0 0 0-6 0C7.4 2.7 6.3 3 6.3 3A4.8 4.8 0 0 0 6.2 6a5.3 5.3 0 0 0-1.4 3.6c0 5.2 3.2 6.3 6.2 6.7a3 3 0 0 0-.8 2.4V22"/>',
+  git:'<circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="8" r="2.2"/><path d="M6 8.2v7.6M8.2 6h3.6A6 6 0 0 1 18 12v0"/>',
+  key:'<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-3 3 3 3m-6-6 3 3"/>',
   user:'<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
   upload:'<path d="M12 16V4m-5 5 5-5 5 5M4 16v4h16v-4"/>',
   layers:'<path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/>',
@@ -135,7 +138,7 @@ function hero() {return `<section class="hero"><div class="container hero-grid">
 function categories() {const cats=['Web App','AI & ML','Mobile App','Dev Tool','Open Source','Design','Idea'];return `<section class="category-strip"><div class="container"><div class="section-kicker">EXPLORE BY INTEREST</div><div class="category-cards">${cats.map((c,i)=>`<button class="category-card ${state.filter.category===c?'cat-active':''}" style="--i:${i}" data-action="pick-category" data-category="${esc(c)}"><span class="category-icon">${ic(categoryIcon(c),20)}</span><span>${esc(c)}</span>${ic('chevron',15)}</button>`).join('')}</div></div></section>`;}
 function projectCard(p,i=0) {
   const shots=(p.media||[]).filter(m=>m.kind==='screenshot').length;
-  return `<article class="project-card reveal" style="--i:${i%24}"><a href="/p/${encodeURIComponent(p.slug)}" data-link class="project-cover-link" aria-label="View ${esc(p.title)}">${art(p)}<span class="cover-top-tag">${ic(categoryIcon(p.category),13)} ${esc(p.category)}</span>${p.is_demo?'<span class="demo-tag">SAMPLE</span>':''}${shots?`<span class="cover-shot-tag">${ic('image',12)} ${shots}</span>`:''}<span class="cover-open">${ic('arrow',18)}</span></a><div class="project-info"><div class="project-info-top"><span class="stage stage-${p.stage.toLowerCase().replaceAll(' ','-')}"><i></i>${esc(p.stage)}</span><span class="project-like-count">${ic('heart',14)} ${p.likes}</span></div><a href="/p/${encodeURIComponent(p.slug)}" data-link class="project-title">${esc(p.title)}</a><p class="project-tagline">${esc(p.tagline)}</p><div class="tech-list">${p.tech.slice(0,3).map(t=>`<span>${esc(t)}</span>`).join('')}</div><div class="project-bottom"><a href="/makers/${encodeURIComponent(p.creator.username)}" data-link class="creator">${usernameAvatar(p.creator,'small')}<span>${esc(p.creator.name)}</span></a><span class="tiny-date">${formatDate(p.created_at)}</span></div></div></article>`;
+  return `<article class="project-card reveal" style="--i:${i%24}"><a href="/p/${encodeURIComponent(p.slug)}" data-link class="project-cover-link" aria-label="View ${esc(p.title)}">${art(p)}<span class="cover-top-tag">${ic(categoryIcon(p.category),13)} ${esc(p.category)}</span>${p.is_demo?'<span class="demo-tag">SAMPLE</span>':''}${shots?`<span class="cover-shot-tag">${ic('image',12)} ${shots}</span>`:''}<span class="cover-open">${ic('arrow',18)}</span></a><div class="project-info"><div class="project-info-top"><span class="stage stage-${p.stage.toLowerCase().replaceAll(' ','-')}"><i></i>${esc(p.stage)}</span><span class="project-like-count">${ic('heart',14)} ${p.likes}</span></div><a href="/p/${encodeURIComponent(p.slug)}" data-link class="project-title">${esc(p.title)}</a><p class="project-tagline">${esc(p.tagline)}</p><div class="tech-list">${p.tech.slice(0,3).map(t=>`<span>${esc(t)}</span>`).join('')}</div><div class="project-bottom"><a href="/makers/${encodeURIComponent(p.creator.username)}" data-link class="creator">${usernameAvatar(p.creator,'small')}<span>${esc(p.creator.name)}</span></a>${p.is_owner&&state.meta?.studio?.enabled?`<a href="/studio/${encodeURIComponent(p.slug)}" data-link class="studio-card-link" aria-label="Open Studio for ${esc(p.title)}">${ic('terminal',13)} Studio</a>`:''}<span class="tiny-date">${formatDate(p.created_at)}</span></div></div></article>`;
 }
 function catalog() {const isHome=state.route==='/';return `<section class="catalog-section" id="discover"><div class="container"><div class="catalog-heading"><div><div class="section-kicker"><span class="tiny-star">✦</span> CURATED FOR THE CURIOUS</div><h2>${isHome?'Explore the <em>extraordinary.</em>':'Discover what’s <em>being built.</em>'}</h2><p>From weekend experiments to the next big thing. Find something worth exploring.</p></div><span class="subtle-counter" id="results-count"></span></div><div class="catalog-tools"><div class="search-box">${ic('search',19)}<input id="search-input" type="search" aria-label="Search projects" placeholder="Search projects, tech, ideas..." value="${esc(state.filter.q)}" autocomplete="off"/><span class="search-shortcut" aria-hidden="true">⌘ K</span></div><div class="select-shell">${ic('filter',17)}<select id="stage-select" aria-label="Filter by stage"><option value="All">All stages</option>${state.meta.stages.map(s=>`<option ${state.filter.stage===s?'selected':''}>${esc(s)}</option>`).join('')}</select>${ic('down',16)}</div><div class="select-shell">${ic('layers',17)}<select id="sort-select" aria-label="Sort projects"><option value="trending" ${state.filter.sort==='trending'?'selected':''}>Trending</option><option value="newest" ${state.filter.sort==='newest'?'selected':''}>Newest</option><option value="popular" ${state.filter.sort==='popular'?'selected':''}>Most viewed</option></select>${ic('down',16)}</div></div><div class="filter-pills" id="filter-pills">${filterPills()}</div><div class="catalog-results" id="catalog-results"><div class="catalog-loading">${ic('spark',24)} Discovering wonderful things...</div></div></div></section>`;}
 function filterPills() {return ['All',...state.meta.categories].map(c=>`<button data-action="set-filter" data-category="${esc(c)}" class="pill ${state.filter.category===c?'pill-active':''}">${c==='All'?ic('grid',15):''}${esc(c)}</button>`).join('');}
@@ -192,8 +195,33 @@ function observeReveals() {
 }
 
 /* ------------------------------------------------------------------------ auth */
-function panelLogin(type='login') {const sign=type==='join';const meter=sign?`<span class="pw-meter" id="pw-meter" aria-live="polite"><b></b><em>Add letters and numbers</em></span>`:'';return `<section class="auth-page"><div class="container auth-layout"><div class="auth-story"><div class="auth-orb"></div><div class="eyebrow"><span class="online-pulse"></span> THE CREATOR COMMUNITY</div><h1>Every maker has <span class="gradient-word">a story.</span></h1><p>Yours deserves a place to shine. Join a space made for the beautifully curious.</p><div class="auth-points"><span>${ic('circle',17)} Showcase anything you've built</span><span>${ic('circle',17)} Discover interesting makers</span><span>${ic('circle',17)} Give your ideas a home</span></div></div><div class="auth-card glass-panel"><div class="auth-card-head"><span class="auth-emblem">${ic('spark',22)}</span><h2>${sign?'Create your account':'Welcome back'}</h2><p>${sign?'Join the community. Your next chapter starts here.':'The maker universe missed you.'}</p></div><form id="auth-form" data-form="${sign?'register':'login'}">${sign?`<div class="input-group"><label for="full-name">Your name</label><input required id="full-name" name="name" minlength="2" maxlength="70" placeholder="e.g. Alex Rivera"/></div><div class="input-group"><label for="user-name">Username</label><input required id="user-name" name="username" minlength="3" maxlength="25" pattern="[a-zA-Z0-9_]+" placeholder="alexbuilds" autocomplete="username"/></div>`:''}<div class="input-group"><label for="email">${sign?'Email address':'Email or username'}</label><input required id="email" name="email" ${sign?'type="email"':'type="text"'} placeholder="${sign?'you@example.com':'Email or username'}" autocomplete="${sign?'email':'username'}"/></div><div class="input-group"><label for="password">Password</label><input required id="password" name="password" type="password" minlength="8" placeholder="At least 8 characters" autocomplete="${sign?'new-password':'current-password'}"/>${meter}</div><div class="form-error" id="auth-error" role="alert"></div><button type="submit" class="btn btn-primary form-submit">${sign?'Create free account':'Log in'} ${ic('arrow',18)}</button></form><div class="auth-switch">${sign?'Already part of Univorya?':'New around here?'} <a href="/${sign?'login':'join'}" data-link>${sign?'Log in':'Create an account'}</a></div><p class="auth-note">Your account is stored in this MVP's local database. No external sign-in required.</p></div></div></section>`;}
-function authPage(type){frame(panelLogin(type),'auth-main');}
+function googleGlyph(size=18){
+ return `<svg width="${size}" height="${size}" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`;
+}
+function googleButton(){
+ if(!state.meta?.google?.enabled)return '';
+ const next=encodeURIComponent(state.pendingAfterAuth||'/dashboard');
+ return `<a class="btn btn-google" href="/auth/google/start?next=${next}" rel="nofollow">${googleGlyph(18)} Continue with Google</a>`+
+  `<div class="auth-divider"><span>or use your email</span></div>`;
+}
+const GOOGLE_ERRORS={
+ state:'Google sign-in expired. Please try again.',
+ denied:'Google sign-in was cancelled.',
+ missing_code:'Google did not return a sign-in code. Please try again.',
+ exchange:'Google sign-in could not be completed. Please try again.',
+ provider:'Google sign-in was interrupted. Please try again.',
+ account:'That Google account could not be linked to Univorya. Please try again.'
+};
+function panelLogin(type='login') {const sign=type==='join';const meter=sign?`<span class="pw-meter" id="pw-meter" aria-live="polite"><b></b><em>Add letters and numbers</em></span>`:'';return `<section class="auth-page"><div class="container auth-layout"><div class="auth-story"><div class="auth-orb"></div><div class="eyebrow"><span class="online-pulse"></span> THE CREATOR COMMUNITY</div><h1>Every maker has <span class="gradient-word">a story.</span></h1><p>Yours deserves a place to shine. Join a space made for the beautifully curious.</p><div class="auth-points"><span>${ic('circle',17)} Showcase anything you've built</span><span>${ic('circle',17)} Discover interesting makers</span><span>${ic('circle',17)} Give your ideas a home</span></div></div><div class="auth-card glass-panel"><div class="auth-card-head"><span class="auth-emblem">${ic('spark',22)}</span><h2>${sign?'Create your account':'Welcome back'}</h2><p>${sign?'Join the community. Your next chapter starts here.':'The maker universe missed you.'}</p></div>${googleButton()}<form id="auth-form" data-form="${sign?'register':'login'}">${sign?`<div class="input-group"><label for="full-name">Your name</label><input required id="full-name" name="name" minlength="2" maxlength="70" placeholder="e.g. Alex Rivera"/></div><div class="input-group"><label for="user-name">Username</label><input required id="user-name" name="username" minlength="3" maxlength="25" pattern="[a-zA-Z0-9_]+" placeholder="alexbuilds" autocomplete="username"/></div>`:''}<div class="input-group"><label for="email">${sign?'Email address':'Email or username'}</label><input required id="email" name="email" ${sign?'type="email"':'type="text"'} placeholder="${sign?'you@example.com':'Email or username'}" autocomplete="${sign?'email':'username'}"/></div><div class="input-group"><label for="password">Password</label><input required id="password" name="password" type="password" minlength="8" placeholder="At least 8 characters" autocomplete="${sign?'new-password':'current-password'}"/>${meter}</div><div class="form-error" id="auth-error" role="alert"></div><button type="submit" class="btn btn-primary form-submit">${sign?'Create free account':'Log in'} ${ic('arrow',18)}</button></form><div class="auth-switch">${sign?'Already part of Univorya?':'New around here?'} <a href="/${sign?'login':'join'}" data-link>${sign?'Log in':'Create an account'}</a></div><p class="auth-note">Passwords are stored as salted scrypt hashes. Google sign-in shares only your name and verified email.</p></div></div></section>`;}
+function authPage(type){
+ const code=new URLSearchParams(location.search).get('google_error');
+ frame(panelLogin(type),'auth-main');
+ if(code){
+  toast(GOOGLE_ERRORS[code]||'Google sign-in failed. Please try again.','error');
+  history.replaceState({},'',location.pathname);
+  state.route=location.pathname;
+ }
+}
 
 /* ------------------------------------------------------------------------ form */
 const DRAFT_KEY='univorya.draft';
@@ -242,7 +270,7 @@ function projectPage(slug){frame(`<section class="page-loading"><div class="cont
  const links=[['Live demo','demo_url','external'],['Source code','repo_url','github'],['Website','website_url','globe']].filter(x=>p[x[1]]);
  const shots=(p.media||[]).map((m,i)=>({m,i})).filter(x=>x.m.kind==='screenshot');
  state.lightbox=-1;state.currentProject=p;
- frame(`<section class="detail-section"><div class="container"><nav class="breadcrumb" aria-label="Breadcrumb"><a href="/explore" data-link>Explore</a>${ic('chevron',15)}<span>${esc(p.category)}</span>${ic('chevron',15)}<span class="crumb-current">${esc(p.title)}</span></nav><div class="detail-hero"><div class="detail-header"><div class="detail-eyebrow"><span class="stage stage-${p.stage.toLowerCase()}"><i></i>${esc(p.stage)}</span><span class="detail-category">${ic(categoryIcon(p.category),16)} ${esc(p.category)}</span>${p.is_demo?'<span class="demo-detail">FICTIONAL SAMPLE</span>':''}</div><h1 class="clamp-title">${esc(p.title)}<span class="title-dot">.</span></h1><p class="clamp-tagline">${esc(p.tagline)}</p><div class="detail-meta"><a href="/makers/${encodeURIComponent(p.creator.username)}" data-link class="detail-author">${usernameAvatar(p.creator)} <span><strong>${esc(p.creator.name)}</strong><small>@${esc(p.creator.username)}</small></span></a><div class="meta-stat">${ic('calendar',16)} ${formatDate(p.created_at)}</div><div class="meta-stat">${ic('eye',16)} <span class="count-up" data-to="${p.views}">0</span> views</div></div><div class="detail-actions">${links.map(([text,k,i])=>`<a class="btn ${k==='demo_url'?'btn-primary':'btn-ghost'}" href="${esc(p[k])}" target="_blank" rel="noopener noreferrer">${ic(i,17)} ${text} ${ic('external',14)}</a>`).join('')}<button class="btn btn-outline ${p.liked?'liked':''}" data-action="like" data-slug="${esc(p.slug)}">${ic('heart',18)} ${p.liked?'Liked':'Appreciate'} <span id="like-count">${p.likes}</span></button></div></div><div class="detail-art reveal">${art(p,true)}</div></div><div class="detail-content"><div class="detail-article reveal"><div class="section-kicker">THE BIG IDEA</div><h2>About this project</h2><div class="project-description">${esc(p.description).replace(/\n/g,'<br>')}</div>${p.is_demo?'<div class="sample-callout">✦ This is fictional sample content used to demonstrate the gallery. It is not a real creator submission.</div>':''}${shots.length?`<div class="section-kicker little-top">FROM THE PROJECT</div><h2>Screenshots <small>${shots.length}</small></h2><div class="shot-grid">${shots.map((s,n)=>`<button class="shot reveal" style="--i:${n}" data-action="open-lightbox" data-index="${s.i}" aria-label="Enlarge screenshot ${n+1}"><img src="${esc(s.m.file)}" alt="${esc(p.title)} screenshot ${n+1}" loading="lazy" width="${s.m.width}" height="${s.m.height}"/><span class="shot-bar"><b>${s.m.width}×${s.m.height}</b><i>${kb(s.m.bytes)}</i>${s.m.animated?'<em class="shot-flag">animated</em>':''}</span></button>`).join('')}</div>`:''}<div class="section-kicker little-top">BUILT WITH</div><h3>Under the hood</h3><div class="detail-tech">${p.tech.length?p.tech.map(x=>`<span>${ic('code',15)} ${esc(x)}</span>`).join(''):'<span>Tech stack not specified</span>'}</div>${p.tags.length?`<h3 class="tags-title">Tags</h3><div class="detail-tags">${p.tags.map(x=>`<span>#${esc(x)}</span>`).join('')}</div>`:''}</div><aside class="detail-aside"><div class="aside-box glass-panel reveal"><div class="aside-heading">THE MAKER</div><div class="aside-author">${usernameAvatar(p.creator)}<div><strong>${esc(p.creator.name)}</strong><small>@${esc(p.creator.username)}</small></div></div><a class="btn btn-outline full-width" href="/makers/${encodeURIComponent(p.creator.username)}" data-link>View creator's projects ${ic('arrow',16)}</a></div><div class="aside-box glass-panel reveal"><div class="aside-heading">PROJECT SNAPSHOT</div><div class="snapshot-row"><span>Stage</span><strong>${esc(p.stage)}</strong></div><div class="snapshot-row"><span>Category</span><strong>${esc(p.category)}</strong></div><div class="snapshot-row"><span>License</span><strong>${esc(p.license||'Not specified')}</strong></div><div class="snapshot-row"><span>Appreciations</span><strong>${p.likes}</strong></div><div class="snapshot-row"><span>Views</span><strong>${p.views}</strong></div>${(p.media||[]).length?`<div class="snapshot-row"><span>Uploads</span><strong>${p.media.length} image${p.media.length>1?'s':''}</strong></div>`:''}</div>${(p.is_owner&&p.preview_url)?`<div class="aside-box glass-panel reveal local-preview-box"><div class="aside-heading">ON THIS MACHINE</div><p class="preview-target">${ic('terminal',15)}<code>${esc(p.preview_url)}</code></p><button class="btn btn-primary full-width" data-action="open-local-preview" data-url="${esc(p.preview_url)}">${ic('external',17)} Open on this machine</button><p class="preview-note">Nobody else sees this address. Want a separate Chrome window with no tabs? Run <code>python scripts/showcase.py ${esc(p.slug)}</code> in your terminal.</p></div>`:''}${p.is_owner?`<a href="/edit/${encodeURIComponent(p.slug)}" data-link class="btn btn-outline full-width edit-project-btn">${ic('code',16)} Edit project</a><button data-action="delete" data-slug="${esc(p.slug)}" class="danger-button">${ic('trash',16)} Delete project</button>`:''}</aside></div></div></section>`);
+ frame(`<section class="detail-section"><div class="container"><nav class="breadcrumb" aria-label="Breadcrumb"><a href="/explore" data-link>Explore</a>${ic('chevron',15)}<span>${esc(p.category)}</span>${ic('chevron',15)}<span class="crumb-current">${esc(p.title)}</span></nav><div class="detail-hero"><div class="detail-header"><div class="detail-eyebrow"><span class="stage stage-${p.stage.toLowerCase()}"><i></i>${esc(p.stage)}</span><span class="detail-category">${ic(categoryIcon(p.category),16)} ${esc(p.category)}</span>${p.is_demo?'<span class="demo-detail">FICTIONAL SAMPLE</span>':''}</div><h1 class="clamp-title">${esc(p.title)}<span class="title-dot">.</span></h1><p class="clamp-tagline">${esc(p.tagline)}</p><div class="detail-meta"><a href="/makers/${encodeURIComponent(p.creator.username)}" data-link class="detail-author">${usernameAvatar(p.creator)} <span><strong>${esc(p.creator.name)}</strong><small>@${esc(p.creator.username)}</small></span></a><div class="meta-stat">${ic('calendar',16)} ${formatDate(p.created_at)}</div><div class="meta-stat">${ic('eye',16)} <span class="count-up" data-to="${p.views}">0</span> views</div></div><div class="detail-actions">${links.map(([text,k,i])=>`<a class="btn ${k==='demo_url'?'btn-primary':'btn-ghost'}" href="${esc(p[k])}" target="_blank" rel="noopener noreferrer">${ic(i,17)} ${text} ${ic('external',14)}</a>`).join('')}${p.is_owner&&state.meta?.studio?.enabled?`<a class="btn btn-primary" data-link href="/studio/${encodeURIComponent(p.slug)}">${ic('terminal',17)} Open Studio ${ic('arrow',15)}</a>`:''}<button class="btn btn-outline ${p.liked?'liked':''}" data-action="like" data-slug="${esc(p.slug)}">${ic('heart',18)} ${p.liked?'Liked':'Appreciate'} <span id="like-count">${p.likes}</span></button></div></div><div class="detail-art reveal">${art(p,true)}</div></div><div class="detail-content"><div class="detail-article reveal"><div class="section-kicker">THE BIG IDEA</div><h2>About this project</h2><div class="project-description">${esc(p.description).replace(/\n/g,'<br>')}</div>${p.is_demo?'<div class="sample-callout">✦ This is fictional sample content used to demonstrate the gallery. It is not a real creator submission.</div>':''}${shots.length?`<div class="section-kicker little-top">FROM THE PROJECT</div><h2>Screenshots <small>${shots.length}</small></h2><div class="shot-grid">${shots.map((s,n)=>`<button class="shot reveal" style="--i:${n}" data-action="open-lightbox" data-index="${s.i}" aria-label="Enlarge screenshot ${n+1}"><img src="${esc(s.m.file)}" alt="${esc(p.title)} screenshot ${n+1}" loading="lazy" width="${s.m.width}" height="${s.m.height}"/><span class="shot-bar"><b>${s.m.width}×${s.m.height}</b><i>${kb(s.m.bytes)}</i>${s.m.animated?'<em class="shot-flag">animated</em>':''}</span></button>`).join('')}</div>`:''}<div class="section-kicker little-top">BUILT WITH</div><h3>Under the hood</h3><div class="detail-tech">${p.tech.length?p.tech.map(x=>`<span>${ic('code',15)} ${esc(x)}</span>`).join(''):'<span>Tech stack not specified</span>'}</div>${p.tags.length?`<h3 class="tags-title">Tags</h3><div class="detail-tags">${p.tags.map(x=>`<span>#${esc(x)}</span>`).join('')}</div>`:''}</div><aside class="detail-aside"><div class="aside-box glass-panel reveal"><div class="aside-heading">THE MAKER</div><div class="aside-author">${usernameAvatar(p.creator)}<div><strong>${esc(p.creator.name)}</strong><small>@${esc(p.creator.username)}</small></div></div><a class="btn btn-outline full-width" href="/makers/${encodeURIComponent(p.creator.username)}" data-link>View creator's projects ${ic('arrow',16)}</a></div><div class="aside-box glass-panel reveal"><div class="aside-heading">PROJECT SNAPSHOT</div><div class="snapshot-row"><span>Stage</span><strong>${esc(p.stage)}</strong></div><div class="snapshot-row"><span>Category</span><strong>${esc(p.category)}</strong></div><div class="snapshot-row"><span>License</span><strong>${esc(p.license||'Not specified')}</strong></div><div class="snapshot-row"><span>Appreciations</span><strong>${p.likes}</strong></div><div class="snapshot-row"><span>Views</span><strong>${p.views}</strong></div>${(p.media||[]).length?`<div class="snapshot-row"><span>Uploads</span><strong>${p.media.length} image${p.media.length>1?'s':''}</strong></div>`:''}</div>${(p.is_owner&&p.preview_url)?`<div class="aside-box glass-panel reveal local-preview-box"><div class="aside-heading">ON THIS MACHINE</div><p class="preview-target">${ic('terminal',15)}<code>${esc(p.preview_url)}</code></p><button class="btn btn-primary full-width" data-action="open-local-preview" data-url="${esc(p.preview_url)}">${ic('external',17)} Open on this machine</button><p class="preview-note">Nobody else sees this address. Want a separate Chrome window with no tabs? Run <code>python scripts/showcase.py ${esc(p.slug)}</code> in your terminal.</p></div>`:''}${p.is_owner?`<a href="/edit/${encodeURIComponent(p.slug)}" data-link class="btn btn-outline full-width edit-project-btn">${ic('code',16)} Edit project</a><button data-action="delete" data-slug="${esc(p.slug)}" class="danger-button">${ic('trash',16)} Delete project</button>`:''}</aside></div></div></section>`);
  document.title=`${p.title} · Univorya`;
  countUp();observeReveals();
  }).catch(e=>frame(`<section class="gate-page"><div class="container"><div class="gate-card"><h1>Project not found.</h1><p>${esc(e.message)}</p><a href="/explore" data-link class="btn btn-primary">Explore projects ${ic('arrow',18)}</a></div></div></section>`));}
@@ -272,7 +300,7 @@ async function editPage(slug){
   const heading=$('.submit-intro h1');heading.innerHTML='Keep your <span class="gradient-word">story evolving.</span>';
  }catch(e){frame('<section class="gate-page"><div class="container"><div class="gate-card"><h1>Cannot edit project</h1><p>'+esc(e.message)+'</p><a href="/dashboard" data-link class="btn btn-primary">My dashboard</a></div></div></section>');}
 }
-function dashboard(){if(!state.user){navigate('/login');return;}frame(`<section class="dashboard-page"><div class="container"><div class="dashboard-top"><div><div class="eyebrow"><span class="online-pulse"></span> YOUR CREATOR SPACE</div><h1>Good to see you, <span class="gradient-word">${esc(state.user.name.split(' ')[0])}.</span></h1><p>Everything you've shared with the world, all in one place.</p></div><div class="dashboard-actions"><button class="btn btn-ghost" data-action="logout">${ic('logout',16)} Log out</button><a href="/submit" data-link class="btn btn-primary">${ic('plus',17)} New project</a></div></div><div id="dashboard-projects"><div class="catalog-loading">Loading your projects...</div></div></div></section>`);
+function dashboard(){if(!state.user){navigate('/login');return;}frame(`<section class="dashboard-page"><div class="container"><div class="dashboard-top"><div><div class="eyebrow"><span class="online-pulse"></span> YOUR CREATOR SPACE</div><h1>Good to see you, <span class="gradient-word">${esc(state.user.name.split(' ')[0])}.</span></h1><p>Everything you've shared with the world, all in one place.</p>${state.user.auth_provider==='google'?`<div class="account-provider">${googleGlyph(15)} <span>Signed in with Google</span> <b>${esc(state.user.email||'')}</b></div>`:''}</div><div class="dashboard-actions"><button class="btn btn-ghost" data-action="logout">${ic('logout',16)} Log out</button><a href="/submit" data-link class="btn btn-primary">${ic('plus',17)} New project</a></div></div><div id="dashboard-projects"><div class="catalog-loading">Loading your projects...</div></div></div></section>`);
  api('/api/projects?creator='+encodeURIComponent(state.user.username)+'&sort=newest').then(d=>{const el=$('#dashboard-projects');if(!el)return;el.innerHTML=d.projects.length?`<div class="dashboard-count">${d.projects.length} published ${d.projects.length===1?'creation':'creations'}</div><div class="project-grid">${d.projects.map(projectCard).join('')}</div>`:`<div class="dashboard-empty glass-panel">${ic('rocket',34)}<h2>Your portfolio is a blank canvas.</h2><p>Every great maker starts with their first project. Ready to share yours?</p><a class="btn btn-primary" href="/submit" data-link>Publish your first project ${ic('arrow',17)}</a></div>`;observeReveals();}).catch(e=>toast('Could not load your projects right now.','error'));}
 function makerPage(username){
  frame(`<section class="dashboard-page"><div class="container"><div class="page-loading-inline"><div class="catalog-loading">${ic('spark',22)} Loading creator...</div></div></div></section>`);
@@ -282,6 +310,197 @@ function makerPage(username){
   countUp();observeReveals();
   api('/api/projects?creator='+encodeURIComponent(maker.username)).then(d=>{const el=$('#maker-projects');if(!el)return;el.innerHTML=d.projects.length?`<div class="dashboard-count">${d.projects.length} creations</div><div class="project-grid">${d.projects.map(projectCard).join('')}</div>`:`<div class="empty-state">No public projects yet for this creator.</div>`;observeReveals();}).catch(()=>toast('Could not load this creator\'s projects.','error'));
  }).catch(e=>frame(`<section class="gate-page"><div class="container"><div class="gate-card"><h1>No creator found.</h1><p>${esc(e.message)}</p><a href="/explore" data-link class="btn btn-primary">Explore projects ${ic('arrow',18)}</a></div></div></section>`));}
+
+/* ---------------------------------------------------------------------- studio */
+const STUDIO_TOOL_LABELS={list_files:'Listed files',read_file:'Read file',write_file:'Wrote file',delete_file:'Deleted file',run_command:'Ran command',start_preview:'Started preview',stop_preview:'Stopped preview',preview_status:'Checked preview',git_status:'Checked Git status',git_diff:'Read Git diff',git_clone:'Cloned repository',git_commit:'Committed changes',git_push:'Pushed to origin',git_pull:'Pulled from origin',cli_agent:'Ran agent CLI'};
+
+function stopStudioPolling(){if(studio.poll){clearInterval(studio.poll);studio.poll=null;}}
+function studioReset(){stopStudioPolling();studio.slug=null;studio.data=null;studio.tab='chat';studio.pending=false;studio.log='';studio.busy=false;studio.frameKey='';}
+function studioRoute(slug){return '/studio/'+encodeURIComponent(slug);}
+
+function studioToolHtml(event){
+  const label=STUDIO_TOOL_LABELS[event.name]||event.name||'Tool';
+  const raw=event.args?.path||event.args?.command||'';
+  const detail=raw?` <code>${esc(String(raw).slice(0,90))}</code>`:'';
+  return `<details class="studio-tool ${event.ok===false?'failed':'ok'}"><summary><span>${event.ok===false?ic('alert',13):ic('terminal',13)} ${esc(label)}${detail}</span>${ic('down',13)}</summary><pre>${esc(String(event.result||'').slice(0,4000))}</pre></details>`;
+}
+function studioMessageHtml(message){
+  if(message.role==='user')return `<div class="studio-msg user"><div class="studio-bubble">${esc(message.content).replace(/\n/g,'<br>')}</div></div>`;
+  if(message.role!=='assistant')return '';
+  const events=Array.isArray(message.meta?.events)?message.meta.events:[];
+  return `<div class="studio-msg assistant"><span class="studio-agent">${ic('spark',16)}</span><div class="studio-bubble"><div class="studio-text">${esc(message.content).replace(/\n/g,'<br>')||'<em>Working…</em>'}</div>${events.length?`<div class="studio-tools">${events.map(studioToolHtml).join('')}</div>`:''}</div></div>`;
+}
+function studioComposerHtml(hasKey=Boolean(studio.data?.credential)){
+  const disabled=!hasKey||studio.pending;
+  const model=studio.data?.credential?`${esc(studio.data.credential.provider)} · ${esc(studio.data.credential.model)}`:'No model connected';
+  return `<form class="studio-composer" data-form="studio-chat"><textarea id="studio-message" name="message" rows="2" maxlength="12000" placeholder="${hasKey?'Ask Studio to build or change something…':'Connect a model key first'}" ${disabled?'disabled':''}></textarea><div class="studio-composer-row"><span class="studio-hint">${model}</span>${!hasKey?`<button type="button" class="studio-key-link" data-action="studio-tab" data-tab="settings">Connect a key</button>`:''}<button type="submit" class="btn btn-primary studio-send" ${disabled?'disabled':''} aria-label="Send message">${ic('arrow',17)}</button></div></form>`;
+}
+function studioChatHtml(){
+  const messages=(studio.data?.messages||[]).filter(m=>m.role==='user'||m.role==='assistant');
+  const hasKey=Boolean(studio.data?.credential);
+  const welcome=`<div class="studio-welcome-msg"><span class="studio-agent big">${ic('spark',22)}</span><h3>What should we build?</h3><p>${hasKey?'Ask for a page, a feature or a fix. Studio reads and writes the project files, runs commands, and refreshes the live preview on the right.':'Connect your own Claude, OpenAI or OpenRouter key, then describe what you want to build.'}</p><div class="studio-suggestions">${['Build a landing page for this project','Add a contact form and store the messages','Make the layout responsive'].map(s=>`<button type="button" class="studio-suggestion" data-action="studio-suggest" data-text="${esc(s)}">${esc(s)}</button>`).join('')}</div></div>`;
+  return `<div class="studio-chat"><div class="studio-chat-log" id="studio-chat-log">${messages.length?messages.map(studioMessageHtml).join(''):welcome}${studio.pending?`<div class="studio-msg assistant"><span class="studio-agent">${ic('spark',16)}</span><div class="studio-bubble studio-typing"><i></i><i></i><i></i><span>Working on it…</span></div></div>`:''}</div>${studioComposerHtml(hasKey)}</div>`;
+}
+function studioProviderById(id){
+  const providers=state.meta?.studio?.providers||[];
+  return providers.find(p=>p.id===id)||providers[0]||{id:'openai',label:'OpenAI',base_url:'',model:'',models:[],agents:{},available:{}};
+}
+function studioSyncProviderUi(){
+  const provider=studioProviderById($('#studio-provider')?.value);
+  const isCli=provider.id==='cli';
+  const model=$('#studio-model')?.value||'';
+  const modelLabel=$('#studio-model-label');if(modelLabel)modelLabel.textContent=isCli?'Agent CLI':'Model';
+  const keyLabel=$('#studio-key-label');
+  if(keyLabel)keyLabel.innerHTML=isCli?'API key <span class="studio-optional">optional</span>':(studio.data?.credential?'API key <span class="studio-optional">leave blank to keep the saved key</span>':'API key');
+  const baseGroup=$('#studio-base-group');if(baseGroup)baseGroup.style.display=(!isCli||model==='custom')?'':'none';
+  const baseLabel=$('#studio-base-label');
+  if(baseLabel)baseLabel.innerHTML=isCli?'Command template <span class="studio-optional">use {prompt}</span>':'Base URL <span class="studio-optional">optional</span>';
+  const base=$('#studio-base');if(base)base.placeholder=isCli?'my-agent --print {prompt}':provider.base_url||'';
+  const list=$('#studio-model-list');
+  if(list){const models=provider.models||[];list.innerHTML=models.map(m=>`<option value="${esc(m)}"${isCli?` label="${esc((provider.agents||{})[m]||m)}${(provider.available||{})[m]?' (installed)':' (not installed)'}"`:''}></option>`).join('');}
+  const status=$('#studio-cli-status');
+  if(status){status.style.display=isCli?'':'none';if(isCli)status.innerHTML=`${ic('terminal',13)} ${esc(model==='custom'?'Runs the command you provide in this workspace.':((provider.agents||{})[model]||model)+((provider.available||{})[model]?' is installed on this server.':' is not installed on this server yet.'))}`;}
+}
+function studioSettingsHtml(){
+  const cred=studio.data?.credential||null;
+  const provider=studioProviderById(cred?.provider);
+  const isCli=provider.id==='cli';
+  const model=cred?.model||provider.model;
+  const models=provider.models||[];
+  const baseVisible=!isCli||model==='custom';
+  const installed=(provider.available||{})[model];
+  const status=`<p class="studio-note" id="studio-cli-status" style="${isCli?'':'display:none'}">${ic('terminal',13)} ${esc(isCli?(model==='custom'?'Runs the command you provide in this workspace.':(provider.agents?.[model]||model)+(installed?' is installed on this server.':' is not installed on this server yet.')):'')}</p>`;
+  return `<div class="studio-settings"><div class="studio-pane-head"><span class="studio-agent">${ic(isCli?'terminal':'cpu',17)}</span><div><h3>${isCli?'Your agent CLI':'Your model key'}</h3><p>${cred?(isCli?`Using ${esc(provider.agents?.[cred.model]||cred.model)}`:`Connected to ${esc(cred.provider)} · key ${esc(cred.key_hint||'saved')}`):'No model connected yet.'}</p></div></div><form data-form="studio-credential" id="studio-credential-form"><div class="input-group"><label for="studio-provider">Provider</label><select id="studio-provider" name="provider">${(state.meta?.studio?.providers||[]).map(p=>`<option value="${esc(p.id)}" ${p.id===provider.id?'selected':''}>${esc(p.label)}</option>`).join('')}</select></div><div class="input-group"><label for="studio-model" id="studio-model-label">${isCli?'Agent CLI':'Model'}</label><input id="studio-model" name="model" list="studio-model-list" value="${esc(model)}" placeholder="${esc(provider.model)}"/><datalist id="studio-model-list">${models.map(m=>`<option value="${esc(m)}"${isCli?` label="${esc((provider.agents||{})[m]||m)}${(provider.available||{})[m]?' (installed)':' (not installed)'}"`:''}></option>`).join('')}</datalist></div>${status}<div class="input-group"><label for="studio-key" id="studio-key-label">${isCli?'API key <span class="studio-optional">optional</span>':`API key ${cred?'<span class="studio-optional">leave blank to keep the saved key</span>':''}`}</label><input id="studio-key" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="${cred?(cred.key_hint||'optional'):'sk-…'}"/></div><div class="input-group" id="studio-base-group" style="${baseVisible?'':'display:none'}"><label for="studio-base" id="studio-base-label">${isCli?'Command template <span class="studio-optional">use {prompt}</span>':'Base URL <span class="studio-optional">optional</span>'}</label><input id="studio-base" name="base_url" value="${esc(cred?.base_url||'')}" placeholder="${esc(isCli?'my-agent --print {prompt}':provider.base_url)}"/></div><div class="studio-form-actions"><button class="btn btn-primary" type="submit">${isCli?'Save CLI':'Save key'}</button>${cred?`<button class="btn btn-ghost" type="button" data-action="studio-delete-key">Remove</button>`:''}</div></form><p class="studio-note">${isCli?`${ic('terminal',14)} The CLI runs as the app account inside this workspace. Install it on the server and sign in once, or paste an optional API key.`:`${ic('circle',14)} Encrypted at rest with Fernet. The key is only sent to the provider you choose — never shared or proxied by Univorya.`}</p></div>`;
+}
+function studioFilesHtml(){
+  const files=studio.data?.files||[];
+  return `<div class="studio-files"><div class="studio-pane-head"><span class="studio-agent">${ic('layers',17)}</span><div><h3>Workspace files</h3><p>${files.length} file${files.length===1?'':'s'} · ${esc(studio.data?.workspace?.template||'blank')} starter</p></div></div>${files.length?`<div class="studio-file-list">${files.map(f=>`<div class="studio-file"><span class="studio-file-name">${ic('code',13)} ${esc(f.path)}</span><small>${kb(f.bytes)}</small></div>`).join('')}</div>`:'<div class="studio-empty-note">No files yet. Ask the agent to create the first one.</div>'}</div>`;
+}
+function studioGitStatusLabel(code){
+  const labels={M:'modified',A:'added',D:'deleted',R:'renamed',C:'copied',U:'conflict','??':'untracked','!!':'ignored'};
+  return labels[code]||code||'changed';
+}
+function studioGitTokenHtml(cred){
+  const connected=Boolean(cred?.connected);
+  return `<form data-form="studio-git-token" class="studio-git-token-form"><div class="input-group"><label for="studio-git-token">Token</label><input id="studio-git-token" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="${connected?esc(cred.hint):'ghp_…'}"/></div><div class="input-group"><label for="studio-git-username">Username <span class="studio-optional">optional</span></label><input id="studio-git-username" name="username" value="${esc(cred?.username||'x-access-token')}"/></div><div class="studio-form-actions"><button class="btn btn-primary" type="submit">Save token</button>${connected?`<button class="btn btn-ghost" type="button" data-action="studio-git-token-delete">Remove token</button>`:''}</div></form>`;
+}
+function studioGitHtml(){
+  const git=studio.data?.git||{};
+  const cred=studio.data?.git_credential||{connected:false};
+  const available=studio.data?.git_available||{available:Boolean(git.available),version:git.version||''};
+  if(git.is_repo){
+    const changes=git.changes||[];
+    const log=git.log||[];
+    return `<div class="studio-git"><div class="studio-pane-head"><span class="studio-agent">${ic('git',17)}</span><div><h3>Repository</h3><p>${esc(git.remote||'No origin remote')}</p></div></div><div class="studio-git-meta"><span class="studio-git-branch">${ic('git',13)} ${esc(git.branch||'detached')}</span>${git.ahead?`<span class="studio-git-count">↑ ${git.ahead}</span>`:''}${git.behind?`<span class="studio-git-count">↓ ${git.behind}</span>`:''}<button class="studio-mini" type="button" data-action="studio-git-refresh" title="Refresh Git status">${ic('globe',13)} Refresh</button></div><div class="studio-git-actions"><button class="btn btn-ghost" type="button" data-action="studio-git-pull" ${git.remote?'':'disabled'}>${ic('down',14)} Pull</button><button class="btn btn-ghost" type="button" data-action="studio-git-push" ${git.remote?'':'disabled'}>${ic('upload',14)} Push</button></div>${changes.length?`<div class="studio-git-changes">${changes.map(c=>`<div class="studio-git-change"><span class="studio-git-status st-${esc((c.status||'M').replace(/[^A-Za-z?]/g,'')||'M')}">${esc(studioGitStatusLabel(c.status))}</span><span class="studio-file-name">${esc(c.path)}</span></div>`).join('')}</div>`:'<div class="studio-empty-note">Working tree clean.</div>'}<details class="studio-git-diff"><summary data-action="studio-git-diff">${ic('code',13)} View diff ${changes.length?`(${changes.length})`:''}</summary><pre class="studio-log" id="studio-git-diff-text">Expand to load the diff.</pre></details><form data-form="studio-git-commit" class="studio-git-form"><div class="input-group"><label for="studio-git-message">Commit message</label><input id="studio-git-message" name="message" maxlength="300" placeholder="Describe this change" ${changes.length?'':'disabled'}/></div><button class="btn btn-primary" type="submit" ${changes.length?'':'disabled'}>${ic('circle',14)} Commit all changes</button></form>${log.length?`<div class="studio-git-log"><div class="studio-git-log-title">Recent commits</div>${log.map(c=>`<div class="studio-git-commit"><code>${esc(c.hash)}</code><span>${esc(c.subject)}</span><small>${esc(c.date)}</small></div>`).join('')}</div>`:''}<details class="studio-git-access" ${cred.connected?'':'open'}><summary>${ic('key',13)} Repository access ${cred.connected?`<span class="studio-chip">token ${esc(cred.hint)}</span>`:''}</summary><p class="studio-note">Only needed for private repositories and pushes. The token is Fernet-encrypted and never returned.</p>${studioGitTokenHtml(cred)}</details></div>`;
+  }
+  const hasFiles=(studio.data?.files||[]).length>0;
+  return `<div class="studio-git"><div class="studio-pane-head"><span class="studio-agent">${ic('git',17)}</span><div><h3>Connect a Git repository</h3><p>Clone an existing repo, then edit, commit and push from this workspace.</p></div></div><p class="studio-note">${available.available?`${ic('circle',14)} ${esc(available.version||'Git is ready')}`:`${ic('alert',14)} Git is not installed on the server. Ask the operator to install git.`}</p><form data-form="studio-git-clone" class="studio-git-form"><div class="input-group"><label for="studio-git-url">Repository URL</label><input id="studio-git-url" name="url" placeholder="https://github.com/you/project.git" ${available.available?'':'disabled'}/></div><div class="input-group"><label for="studio-git-branch">Branch <span class="studio-optional">optional</span></label><input id="studio-git-branch" name="branch" placeholder="main"/></div>${hasFiles?`<label class="studio-check"><input type="checkbox" name="replace" value="1"/> Replace the workspace files (a backup is kept in .univorya/backups)</label>`:''}<button class="btn btn-primary" type="submit" ${available.available?'':'disabled'}>${ic('git',14)} Clone repository</button></form>${cred.connected?`<p class="studio-note">${ic('key',13)} A Git token is saved (${esc(cred.hint)}); it will be used for this clone.</p>`:`<details class="studio-git-access"><summary>${ic('key',13)} Private repository? Add a token first</summary>${studioGitTokenHtml(cred)}</details>`}</div>`;
+}
+function studioUpdateTabCounts(){
+  const files=$('.studio-tab[data-tab="files"] span');if(files)files.textContent=(studio.data?.files||[]).length;
+  const git=$('.studio-tab[data-tab="git"] span');if(git)git.textContent=(studio.data?.git?.changes||[]).length;
+}
+function renderStudioPane(){
+  const pane=$('#studio-pane');if(!pane)return;
+  $$('.studio-tab').forEach(btn=>{const active=btn.dataset.tab===studio.tab;btn.classList.toggle('active',active);btn.setAttribute('aria-selected',String(active));});
+  if(studio.tab==='settings')pane.innerHTML=studioSettingsHtml();
+  else if(studio.tab==='files')pane.innerHTML=studioFilesHtml();
+  else if(studio.tab==='git')pane.innerHTML=studioGitHtml();
+  else pane.innerHTML=studioChatHtml();
+  studioUpdateTabCounts();
+  const log=$('#studio-chat-log');if(log)log.scrollTop=log.scrollHeight;
+}
+function studioPreviewStatus(){
+  const p=studio.data?.preview||{};
+  const status=$('#studio-preview-status');
+  if(status){status.className='studio-status '+(p.running?'live':(p.status==='error'?'bad':''));status.innerHTML=`<i></i>${p.running?'Live':(p.status==='error'?'Needs attention':'Stopped')}`;}
+  const urlEl=$('#studio-preview-url');
+  if(urlEl)urlEl.textContent=p.running?(p.url||''):(p.status==='error'?'Preview failed to start':'No preview running');
+  const open=$('[data-action="studio-open"]');
+  if(open){open.classList.toggle('is-disabled',!p.running);open.href=p.running?p.url:'#';open.target=p.running?'_blank':'';}
+  const popout=$('[data-action="studio-popout"]');
+  if(popout){popout.classList.toggle('is-disabled',!p.running);popout.disabled=!p.running;}
+  const start=$('[data-action="studio-start"]');if(start)start.style.display=p.running?'none':'';
+  const stop=$('[data-action="studio-stop"]');if(stop)stop.style.display=p.running?'':'none';
+}
+function studioPreviewBodyHtml(){
+  const p=studio.data?.preview||{};
+  if(p.running&&p.url)return `<iframe id="studio-frame" title="Live app preview" src="${esc(p.url)}" referrerpolicy="no-referrer"></iframe>`;
+  if(p.status==='error')return `<div class="studio-preview-empty"><span class="studio-preview-orb bad">${ic('alert',28)}</span><h3>The preview did not start.</h3><p>Read the log, then ask the agent to fix the cause or edit the run command.</p><pre class="studio-log">${esc(String(studio.log||p.error||'No log captured yet.').slice(0,3000))}</pre><div class="studio-preview-actions"><button class="btn btn-primary" type="button" data-action="studio-start">${ic('rocket',16)} Try again</button><button class="btn btn-ghost" type="button" data-action="studio-log">Refresh log</button></div></div>`;
+  return `<div class="studio-preview-empty"><span class="studio-preview-orb">${ic('rocket',30)}</span><h3>Your app will appear here.</h3><p>Start the dev server and the live app runs beside the chat — the same loop you get in a desktop code editor.</p><button class="btn btn-primary" type="button" data-action="studio-start">${ic('rocket',16)} Start preview</button><p class="studio-note">The first start can take a few seconds while dependencies load.</p></div>`;
+}
+function renderStudioPreview(force=false){
+  if(!$('#studio-preview-body'))return;
+  studioPreviewStatus();
+  const p=studio.data?.preview||{};
+  const key=(p.running?p.url:'')+'|'+p.status;
+  if(!force&&key===studio.frameKey)return;
+  studio.frameKey=key;
+  $('#studio-preview-body').innerHTML=studioPreviewBodyHtml();
+}
+function startStudioPolling(){
+  stopStudioPolling();
+  if(!studio.data?.preview?.running)return;
+  studio.poll=setInterval(async()=>{
+    if(!studio.slug||!$('#studio-preview-body')){stopStudioPolling();return;}
+    try{
+      const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/preview');
+      const was=studio.data.preview?.running;
+      studio.data.preview=d.preview;
+      if(was&&!d.preview.running){studio.frameKey='';renderStudioPreview(true);stopStudioPolling();toast('The preview stopped','error');}
+    }catch{stopStudioPolling();}
+  },9000);
+}
+async function studioFetchLog(){
+  if(!studio.slug)return;
+  try{
+    const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/preview/log');
+    studio.log=d.log||'';
+    const panel=$('#studio-log-panel'),text=$('#studio-log-text');
+    if(text)text.textContent=studio.log||'(the log is empty)';
+    if(panel){panel.hidden=false;panel.classList.add('is-open');}
+    if(!studio.data?.preview?.running)renderStudioPreview(true);
+  }catch(err){toast(err.message,'error');}
+}
+function studioRefreshPreview(){
+  const frame=$('#studio-frame');
+  const url=studio.data?.preview?.url;
+  if(frame&&url){const target=new URL(url);target.searchParams.set('__uv',String(Date.now()));frame.src=target.toString();toast('Preview refreshed');}
+  else renderStudioPreview(true);
+}
+function renderStudioSetup(){
+  const templates=state.meta?.studio?.templates||{};
+  const title=studio.data?.project?.title||'this project';
+  frame(`<section class="studio-page studio-setup"><div class="studio-setup-card glass-panel"><span class="studio-kicker">UNIVORYA STUDIO</span><h1>Build <span class="gradient-word">${esc(title)}</span> with AI.</h1><p>Pick a starter, connect your own model key, and the workspace opens beside a live preview. The agent can read and write files, install packages, run commands and restart the app.</p><div class="studio-template-grid">${Object.entries(templates).map(([id,label],i)=>`<button class="studio-template" type="button" data-action="studio-create" data-template="${esc(id)}" style="--i:${i}"><span class="studio-template-ico">${ic(id==='python'?'cpu':id==='node'?'globe':id==='static'?'layout':id==='git'?'git':'code',20)}</span><b>${esc(label)}</b><small>${id==='static'?'HTML, CSS and JS':id==='python'?'FastAPI + Uvicorn':id==='node'?'Node HTTP server':id==='git'?'Clone your own repository':'Start from an empty folder'}</small></button>`).join('')}</div><div class="studio-setup-foot">${ic('circle',15)} The workspace is private to you. Only this project's owner can open it.</div></div></section>`,'studio-main');
+}
+function renderStudioWorkspace(){
+  const data=studio.data;
+  const title=data?.project?.title||'Studio';
+  const running=Boolean(data?.preview?.running);
+  document.title='Studio · '+title;
+  frame(`<section class="studio-page"><div class="studio-topbar"><div class="studio-identity"><a class="studio-back" data-link href="/p/${encodeURIComponent(data?.project?.slug||studio.slug)}" aria-label="Back to project">${ic('chevron',18)}</a><div><div class="studio-kicker">UNIVORYA STUDIO</div><h1>${esc(title)}</h1></div><span class="studio-status ${running?'live':''}" id="studio-preview-status"><i></i>${running?'Live':'Stopped'}</span></div><div class="studio-top-actions"><button class="btn btn-ghost" type="button" data-action="studio-refresh" title="Refresh preview">${ic('globe',15)} Refresh</button><button class="btn btn-ghost" type="button" data-action="studio-stop" ${running?'':'style="display:none"'}>${ic('close',15)} Stop</button><button class="btn btn-primary" type="button" data-action="studio-start" ${running?'style="display:none"':''}>${ic('rocket',15)} Start preview</button><a class="btn btn-ghost" data-action="studio-open" href="${running?esc(data.preview.url):'#'}" target="${running?'_blank':''}" rel="noopener noreferrer">${ic('external',15)} Open</a></div></div><div class="studio-split"><aside class="studio-left"><div class="studio-tabs" role="tablist"><button class="studio-tab active" type="button" role="tab" data-action="studio-tab" data-tab="chat" aria-selected="true">Agent</button><button class="studio-tab" type="button" role="tab" data-action="studio-tab" data-tab="files" aria-selected="false">Files <span>${(data?.files||[]).length}</span></button><button class="studio-tab" type="button" role="tab" data-action="studio-tab" data-tab="git" aria-selected="false">Git <span>${(data?.git?.changes||[]).length}</span></button><button class="studio-tab" type="button" role="tab" data-action="studio-tab" data-tab="settings" aria-selected="false">Model</button></div><div class="studio-pane" id="studio-pane"></div></aside><div class="studio-preview"><div class="studio-preview-bar"><span class="studio-preview-dot" aria-hidden="true"></span><span class="studio-preview-url" id="studio-preview-url">${running?esc(data.preview.url):'No preview running'}</span><button type="button" class="studio-mini" data-action="studio-log" title="Preview log">Log</button><button type="button" class="studio-mini" data-action="studio-refresh" title="Reload preview">${ic('globe',13)}</button><button type="button" class="studio-mini" data-action="studio-popout" title="Open the preview in your browser">${ic('external',13)} Open</button></div><div class="studio-preview-body" id="studio-preview-body"></div><div class="studio-log-panel" id="studio-log-panel" hidden><div class="studio-log-head"><span>Preview log</span><button type="button" class="studio-mini" data-action="studio-log-close" aria-label="Close log">${ic('close',14)}</button></div><pre id="studio-log-text"></pre></div></div></div></section>`,'studio-main');
+  renderStudioPane();
+  studio.frameKey='';
+  renderStudioPreview(true);
+  startStudioPolling();
+}
+function studioPage(slug){
+  studioReset();studio.slug=slug;
+  if(!state.user){state.pendingAfterAuth=studioRoute(slug);navigate('/login');return;}
+  if(!state.meta?.studio?.enabled){frame('<section class="gate-page"><div class="container"><div class="gate-card glass-panel"><h1>Studio is turned off.</h1><p>This install has <code>UNIVORYA_STUDIO=0</code>. Ask the operator to enable it.</p><a class="btn btn-primary" data-link href="/explore">Explore projects</a></div></div></section>');document.body.classList.remove('studio-mode');return;}
+  document.body.classList.add('studio-mode');
+  frame(`<section class="studio-page"><div class="studio-boot">${ic('spark',24)} Loading Studio…</div></section>`,'studio-main');
+  api('/api/studio/projects/'+encodeURIComponent(slug)).then(data=>{
+    if(studio.slug!==slug||state.route!==studioRoute(slug))return;
+    studio.data=data;
+    if(!data.workspace){renderStudioSetup();return;}
+    renderStudioWorkspace();
+  }).catch(err=>{
+    if(studio.slug!==slug)return;
+    document.body.classList.remove('studio-mode');
+    frame(`<section class="gate-page"><div class="container"><div class="gate-card glass-panel"><span class="auth-emblem">${ic('alert',24)}</span><h1>Studio could not open.</h1><p>${esc(err.message)}</p><div class="hero-buttons"><a class="btn btn-primary" data-link href="/p/${encodeURIComponent(slug)}">Back to project ${ic('arrow',16)}</a><a class="btn btn-ghost" data-link href="/dashboard">My dashboard</a></div></div></div></section>`);
+  });
+}
 
 /* -------------------------------------------------------------------- drawer */
 function openDrawer(){
@@ -387,6 +606,8 @@ function notFoundPage(path){
 }
 
 function render(){
+ document.body.classList.remove('studio-mode');
+ studioReset();
  state.route=location.pathname.replace(/\/+$/,'')||'/';
  window.scrollTo(0,0);
  const path=state.route;
@@ -397,6 +618,7 @@ function render(){
  else if(path==='/submit')submitPage();
  else if(path.startsWith('/edit/'))editPage(dec(path.substring(6)));
  else if(path==='/dashboard')dashboard();
+ else if(path.startsWith('/studio/'))studioPage(dec(path.substring(8)));
  else if(path.startsWith('/p/'))projectPage(dec(path.substring(3)));
  else if(path.startsWith('/makers/'))makerPage(dec(path.substring(8)));
  else notFoundPage(path);
@@ -404,6 +626,7 @@ function render(){
 let debounce;
 document.addEventListener('input',e=>{
  if(e.target.id==='search-input'){state.filter.q=e.target.value;clearTimeout(debounce);debounce=setTimeout(()=>{writeFiltersToUrl();loadProjects();},320);}
+ if(e.target.id==='studio-model')studioSyncProviderUi();
  if(e.target.id==='password'&&state.route!=='/submit'){const value=e.target.value,classes=(/[A-Za-z]/.test(value)?1:0)+(/\d/.test(value)?1:0)+(/[^A-Za-z0-9\s]/.test(value)?1:0);
   const meter=$('#pw-meter');if(meter){const score=value.length>=12&&classes>=3?3:classes>=2&&value.length>=8?2:value.length?1:0;
    meter.dataset.score=score;meter.querySelector('em').textContent=['Add letters and numbers','Okay — mix in a symbol','Strong','Very strong'][score];}}
@@ -415,6 +638,11 @@ document.addEventListener('input',e=>{
 document.addEventListener('change',async e=>{
  if(e.target.id==='sort-select'){state.filter.sort=e.target.value;writeFiltersToUrl(true);loadProjects();}
  if(e.target.id==='stage-select'){state.filter.stage=e.target.value;writeFiltersToUrl(true);loadProjects();}
+ if(e.target.id==='studio-provider'){
+  const provider=(state.meta?.studio?.providers||[]).find(p=>p.id===e.target.value);
+  if(provider){const model=$('#studio-model');if(model)model.value=provider.model||'';studioSyncProviderUi();}
+ }
+ if(e.target.id==='studio-model'){studioSyncProviderUi();}
  if(e.target.id==='cover'){const f=e.target.files?.[0];if(!f)return;
   const L=state.meta.limits;
   if(f.size>L.max_file_mb*1024*1024){toast(`Cover images are limited to ${L.max_file_mb} MB.`,'error');e.target.value='';return;}
@@ -446,6 +674,93 @@ document.addEventListener('click',async e=>{
   const w=window.open(url,'_blank','popup=yes,width=1280,height=900');
   if(!w)toast('Your browser blocked that window — allow pop-ups for Univorya to preview locally','error');
   else{w.opener=null;toast('Opened your local preview in a new window');}return;}
+  if(action==='studio-tab'){studio.tab=b.dataset.tab||'chat';renderStudioPane();return;}
+  if(action==='studio-suggest'){const t=$('#studio-message');if(t){t.value=b.dataset.text||'';t.focus();}return;}
+  if(action==='studio-create'){
+   if(studio.busy||studio.data?.workspace)return;
+   studio.busy=true;b.disabled=true;b.classList.add('is-loading');
+   try{
+    const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/workspace',{method:'PUT',body:{template:b.dataset.template||'static'}});
+    studio.data={...studio.data,...d,credential:studio.data.credential,messages:studio.data.messages||[]};
+    renderStudioWorkspace();toast('Workspace created — connect a model key to start building.');
+   }catch(err){b.disabled=false;b.classList.remove('is-loading');toast(err.message,'error');}
+   finally{studio.busy=false;}
+   return;
+  }
+  if(action==='studio-start'){
+   if(!studio.slug||studio.busy)return;
+   studio.busy=true;b.disabled=true;b.classList.add('is-loading');
+   try{
+    const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/preview/start',{method:'POST',body:{command:''}});
+    studio.data.preview=d.preview;studio.frameKey='';renderStudioPreview(true);startStudioPolling();
+    toast(d.preview.running?'Preview is live':'Preview stopped');
+   }catch(err){
+    studio.data.preview={...(studio.data.preview||{}),status:'error',running:false,error:err.message};
+    studio.frameKey='';renderStudioPreview(true);toast(err.message,'error');
+   }finally{studio.busy=false;const again=$('[data-action="studio-start"]');if(again){again.disabled=false;again.classList.remove('is-loading');}}
+   return;
+  }
+  if(action==='studio-stop'){
+   if(!studio.slug||studio.busy)return;
+   studio.busy=true;b.disabled=true;
+   try{const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/preview/stop',{method:'POST'});studio.data.preview=d.preview;studio.frameKey='';renderStudioPreview(true);stopStudioPolling();toast('Preview stopped');}
+   catch(err){toast(err.message,'error');}
+   finally{studio.busy=false;const again=$('[data-action="studio-stop"]');if(again){again.disabled=false;}}
+   return;
+  }
+  if(action==='studio-refresh'){studioRefreshPreview();return;}
+  if(action==='studio-log'){await studioFetchLog();return;}
+  if(action==='studio-log-close'){const panel=$('#studio-log-panel');if(panel)panel.hidden=true;return;}
+  if(action==='studio-open'){if(!studio.data?.preview?.running){e.preventDefault();toast('Start the preview first','error');}return;}
+  if(action==='studio-popout'){
+   const url=studio.data?.preview?.url||'';
+   if(!studio.data?.preview?.running||!url){toast('Start the preview first','error');return;}
+   const w=window.open(url,'_blank','popup=yes,width=1280,height=900,noopener');
+   if(!w)toast('Your browser blocked the window — allow pop-ups for Univorya','error');
+   else{w.opener=null;toast('Opened the live preview in your browser');}
+   return;
+  }
+  if(action==='studio-git-refresh'||action==='studio-git-push'||action==='studio-git-pull'){
+   if(!studio.slug||studio.busy)return;
+   if(action==='studio-git-push'&&!window.confirm('Push the current branch to origin?'))return;
+   studio.busy=true;b.disabled=true;b.classList.add('is-loading');
+   try{
+    if(action==='studio-git-refresh'){
+     const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/git');
+     studio.data.git=d.git;studio.data.git_credential=d.credential;studio.data.git_available=d.available;
+     renderStudioPane();toast('Git status refreshed');
+    }else{
+     const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/git/'+(action==='studio-git-push'?'push':'pull'),{method:'POST'});
+     studio.data.git=d.git;if(d.files)studio.data.files=d.files;
+     renderStudioPane();studioUpdateTabCounts();
+     toast(action==='studio-git-push'?'Pushed to origin':'Pulled from origin');
+    }
+   }catch(err){toast(err.message,'error');}
+   finally{studio.busy=false;const again=$('[data-action="'+action+'"]');if(again){again.disabled=false;again.classList.remove('is-loading');}}
+   return;
+  }
+  if(action==='studio-git-diff'){
+   if(!studio.slug)return;
+   const pre=$('#studio-git-diff-text');
+   if(pre&&!pre.dataset.loaded){
+    pre.textContent='Loading diff…';
+    try{const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/git/diff');pre.textContent=d.diff||'(no changes)';pre.dataset.loaded='1';}
+    catch(err){pre.textContent=err.message;}
+   }
+   return;
+  }
+  if(action==='studio-git-token-delete'){
+   if(!window.confirm('Remove your saved Git token? Clone and push for private repositories will stop working.'))return;
+   try{await api('/api/studio/git/credential',{method:'DELETE'});studio.data.git_credential={connected:false,username:'',hint:'',updated_at:''};renderStudioPane();toast('Git token removed');}
+   catch(err){toast(err.message,'error');}
+   return;
+  }
+  if(action==='studio-delete-key'){
+   if(!window.confirm('Remove your saved model key? Your workspace files stay.'))return;
+   try{await api('/api/studio/credential',{method:'DELETE'});studio.data.credential=null;renderStudioPane();toast('Model key removed');}
+   catch(err){toast(err.message,'error');}
+   return;
+  }
  if(action==='drop-picked-media'){const i=Number(b.dataset.index);const [removed]=state.pickedScreens.splice(i,1);if(removed)URL.revokeObjectURL(removed.url);renderMediaList();return;}
  if(action==='drop-existing-media'){const item=state.existingMedia.find(x=>String(x.id)===b.dataset.mediaId);if(item){item.keep=false;item.el&&item.el.remove();}renderMediaList();return;}
  if(action==='restore-media'){const item=state.existingMedia.find(x=>String(x.id)===b.dataset.mediaId);if(item){item.keep=true;renderMediaList();}return;}
@@ -470,6 +785,49 @@ document.addEventListener('submit',async e=>{
    const result=await api(endpoint,{method:isEdit?'PUT':'POST',body:fd});
    clearDraft();releasePicks();
    toast(isEdit?'Project updated!':'Your project is now live on Univorya!');navigate(result.url);
+  }else if(type==='studio-chat'){
+   const text=String(new FormData(form).get('message')||'').trim();
+   if(!text)return;
+   studio.data.messages=studio.data.messages||[];
+   studio.data.messages.push({role:'user',content:text});
+   studio.pending=true;renderStudioPane();
+   try{
+    const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/chat',{method:'POST',body:{message:text}});
+    studio.data.messages.push(d.message);
+    if(d.files)studio.data.files=d.files;
+    if(d.preview)studio.data.preview=d.preview;
+    if(d.git)studio.data.git=d.git;
+    studio.pending=false;
+    renderStudioPane();renderStudioPreview();
+    studioUpdateTabCounts();
+    if(d.preview?.running)startStudioPolling();
+   }catch(err){studio.pending=false;renderStudioPane();if(err.status===409){studio.tab='settings';renderStudioPane();}toast(err.message,'error');}
+  }else if(type==='studio-credential'){
+   const body=Object.fromEntries(new FormData(form).entries());
+   const d=await api('/api/studio/credential',{method:'PUT',body});
+   studio.data.credential=d.credential;
+   studio.tab='chat';renderStudioPane();
+   toast('Model key saved — ask Studio to build something.');
+  }else if(type==='studio-git-token'){
+   const body=Object.fromEntries(new FormData(form).entries());
+   if(!body.token)throw new Error('Paste a Git token first');
+   const d=await api('/api/studio/git/credential',{method:'PUT',body:{token:body.token,username:body.username||'x-access-token'}});
+   studio.data.git_credential=d.credential;renderStudioPane();
+   toast('Git token saved — it is used for private clone and push.');
+  }else if(type==='studio-git-clone'){
+   const fd=new FormData(form);
+   const body={url:String(fd.get('url')||'').trim(),branch:String(fd.get('branch')||'').trim(),replace:fd.get('replace')==='1'};
+   if(!body.url)throw new Error('Enter a repository URL');
+   const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/git/clone',{method:'POST',body});
+   studio.data.git=d.git;studio.data.files=d.files;studio.data.preview=d.preview;
+   studio.tab='git';renderStudioPane();renderStudioPreview(true);
+   toast('Repository cloned — you can edit, commit and push.');
+  }else if(type==='studio-git-commit'){
+   const message=String(new FormData(form).get('message')||'').trim();
+   if(!message)throw new Error('Write a commit message');
+   const d=await api('/api/studio/projects/'+encodeURIComponent(studio.slug)+'/git/commit',{method:'POST',body:{message,paths:[]}});
+   studio.data.git=d.git;renderStudioPane();
+   toast('Changes committed on '+String(d.git?.branch||'the current branch'));
   }
  }catch(err){
   if(err.status===401&&type==='project'){state.keepDraft=true;saveDraft();state.pendingAfterAuth=location.pathname;toast('Your session ended — sign in again to publish. Nothing you typed is lost.','error');navigate('/login');}

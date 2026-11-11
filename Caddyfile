@@ -1,0 +1,12 @@
+# Caddy terminates TLS and proxies to the app over the private Compose network.
+# Set UNIVORYA_DOMAIN in .env, then:
+#   docker compose --profile https up -d --build
+{$UNIVORYA_DOMAIN:example.com} {
+	encode zstd gzip
+	reverse_proxy univorya:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+}

@@ -1,7 +1,7 @@
 """Open a creator's own project in a Chrome window on this machine.
 
 A page served over HTTP cannot start a browser on the visitor's machine, so this is the maker's
-own command: read the loopback preview address back out of the SQLite file, prove it really
+own command: read the loopback preview address back out of SQLite or MemoryDB, prove it really
 points at this machine, and hand it to Chrome in app mode.
 
     python scripts/showcase.py my-project                  # open the stored address
@@ -21,6 +21,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from app.memory_store import MemoryStore  # noqa: E402
+
 LOCAL_HOSTS = {'127.0.0.1', 'localhost', '::1', '[::1]'}
 
 
@@ -44,6 +48,22 @@ def preview_address(db_path, slug):
     if not row:
         raise LookupError(f'No project with the slug "{slug}". Your dashboard lists each project\'s address.')
     return row[0], (row[1] or '').strip()
+
+
+def preview_address_memory(connection_string, slug):
+    """Return (title, stored preview_url) from MemoryDB, or raise LookupError.
+
+    This reads the same production store the web app uses.  It never starts a
+    server or creates collections; an unreachable or empty database is reported
+    as a normal lookup failure.
+    """
+    try:
+        project = MemoryStore(connection_string).get_project(slug)
+    except Exception as err:
+        raise LookupError(f'Cannot read MemoryDB: {err}')
+    if not project:
+        raise LookupError(f'No project with the slug "{slug}". Your dashboard lists each project\'s address.')
+    return project.get('title', ''), (project.get('preview_url') or '').strip()
 
 
 def is_loopback(url):
@@ -81,13 +101,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('slug')
     parser.add_argument('--data-dir', default=os.environ.get('UNIVORYA_DATA_DIR', str(ROOT / 'data')),
-                        help='where univorya.sqlite3 lives')
+                        help='where univorya.sqlite3 lives (SQLite mode)')
     parser.add_argument('--browser', help='path to a Chrome or Chromium binary')
     parser.add_argument('--print', action='store_true', dest='echo', help='print the address and stop')
     args = parser.parse_args(argv)
 
+    memory_url = os.environ.get('MEMORYDB_URL', '').strip()
+    backend = os.environ.get('UNIVORYA_STORE', 'memorydb' if memory_url else 'sqlite').strip().lower()
+    if backend not in ('sqlite', 'memorydb'):
+        return fail("UNIVORYA_STORE must be 'sqlite' or 'memorydb'.")
     try:
-        title, url = preview_address(Path(args.data_dir) / 'univorya.sqlite3', args.slug)
+        if backend == 'memorydb':
+            if not memory_url:
+                return fail('UNIVORYA_STORE=memorydb requires MEMORYDB_URL.')
+            title, url = preview_address_memory(memory_url, args.slug)
+        else:
+            title, url = preview_address(Path(args.data_dir) / 'univorya.sqlite3', args.slug)
     except LookupError as err:
         return fail(str(err))
     if not url:

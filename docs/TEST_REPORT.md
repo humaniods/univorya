@@ -1,5 +1,11 @@
 # Univorya — Local Test Results
 
+> **Post-MVP update (8 November 2026):** the MemoryDB production store, Docker deployment stack and
+> SQLite migration were added after this report. **Update (10 November 2026):** Studio added 14 cases; **later on
+> 10 November** Git clone/commit/push/pull and local agent CLIs added 6 more. The suite now runs **142 cases**,
+> including MemoryDB, Google OAuth, the migration script, Studio, Git and CLI agents. The table below describes the
+> original v0.2 run on 23 October 2026.
+
 **Run date:** 23 October 2026 — the API suite (87 cases), HTTP smoke, the Chromium flow and every code fix below
 were re-run against the working build on that date, then pushed; the same build passed both GitHub Actions jobs.
 
@@ -133,6 +139,30 @@ The test writes `home-desktop.png`, `home-mobile.png`, `explore-pagination.png`,
 captures of a separately started preview instance; the suite does not regenerate them. `docs/screens/*.png` are
 top-of-page crops of the full-page captures, made only so the README gallery renders at readable heights; they
 are derived from the files above and are not separate observations.
+
+## Studio verification (10 November 2026)
+
+Studio was exercised against the running demo stack with a fake OpenAI-compatible endpoint, not a paid provider:
+
+| Layer | Observation | Result |
+|---|---|---|
+| Authentication | Mock Google IdP (`aarav.google.demo@gmail.com`) → `/auth/google/callback` → `/dashboard` session | **Passed** |
+| Listing | Astaar at `/p/astaar-af7a91`: category **Open Source**, stage **Building**, repo `github.com/humaniods/Astaar`, 3 media, owner-only **Open Studio** | **Passed** |
+| Workspace | Static starter scaffolded four files; owner UI switched to the split workspace | **Passed** |
+| Model key | Custom provider `http://127.0.0.1:8077/v1`, model `local`, fake key; stored as a Fernet token, API returns only provider/model/hint | **Passed** |
+| Agent | Chat wrote `index.html`, `style.css`, `app.js`; three `write_file` chips rendered, transcript persisted | **Passed** |
+| Preview | Loopback server on `127.0.0.1:63570`, framed in the right pane; button click inside the iframe completed the demo sequence; Files list, preview log and both Open buttons (top bar and preview bar) all live | **Passed** |
+| Git | Local bare remote seeded with `main`; workspace clone (with backup of the starter), diff, commit, push and fast-forward pull through both the REST API and the `git_*` agent tools; remote log confirmed the pushed commit | **Passed** |
+| Git token | Saved token stored as a Fernet token in `git_credentials`; API returned only username and last four characters; encrypted round trip and removal covered | **Passed** |
+| Agent CLI | `cli` provider with a scripted `python -c` agent rewrote a workspace file, returned its stdout as the assistant reply and recorded a `cli_agent` event; missing binary and non-zero exit map to 422/502 | **Passed** |
+| Database | `studio.sqlite3`: workspace row (`status=running`, pid/port), encrypted model credential, encrypted Git credential, ordered messages, Git remote/branch columns | **Passed** |
+| Suite | `pytest -q --cov=app --cov-fail-under=85` | **142 passed, 90.01% coverage** |
+
+The provider itself was a local stub that returns fixed tool calls. A real OpenAI/Anthropic/OpenRouter call still
+needs the user's own key and is not claimed as tested here. The Git checks used a local bare repository on this
+machine; a real GitHub push with the user's token and the installed Claude Code/Codex/Gemini binaries still need a
+real account. Docker/WSL and Node were not available on this machine, so the container runner and the Node starter
+remain unverified locally.
 
 ## Adversarial probe rounds
 
